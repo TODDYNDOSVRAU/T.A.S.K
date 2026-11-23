@@ -25,6 +25,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InlineSuggestion;
 import android.view.inputmethod.InlineSuggestionsRequest;
 import android.view.inputmethod.InlineSuggestionsResponse;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodSubtype;
 
 import helium314.keyboard.accessibility.AccessibilityUtils;
@@ -816,6 +817,7 @@ public class LatinIME extends InputMethodService implements
         if (mainKeyboardView == null) {
             return;
         }
+        com.tal.task.TaskHitboxBridge.attachKeyboardView(mainKeyboardView);
 
         // Update to a gesture consumer with the current editor and IME state.
         mGestureConsumer = GestureConsumer.newInstance(editorInfo, mInputLogic.getPrivateCommandPerformer(),
@@ -914,6 +916,7 @@ public class LatinIME extends InputMethodService implements
                 currentSettingsValues.mGestureInputEnabled,
                 currentSettingsValues.mGestureTrailEnabled,
                 currentSettingsValues.mGestureFloatingPreviewTextEnabled);
+        syncTaskHitboxContext(null);
 
         if (TRACE) Debug.startMethodTracing("/data/trace/latinime");
     }
@@ -987,6 +990,9 @@ public class LatinIME extends InputMethodService implements
                 && ((oldSelEnd == newSelEnd && oldSelStart != newSelStart) || (oldSelEnd != newSelEnd && oldSelStart == newSelStart)))
                 return;
             mKeyboardSwitcher.updateShiftState(getCurrentAutoCapsState(), getCurrentRecapitalizeState());
+        }
+        if (isInputViewShown()) {
+            syncTaskHitboxContext(null);
         }
     }
 
@@ -1252,6 +1258,8 @@ public class LatinIME extends InputMethodService implements
                 mInputLogic.onCodeInput(mSettings.getCurrent(), event, mKeyboardSwitcher.getKeyboardCapsMode(), mHandler);
         updateStateAfterInputTransaction(completeInputTransaction);
         mKeyboardSwitcher.onEvent(event, getCurrentAutoCapsState(), getCurrentRecapitalizeState());
+        com.tal.task.TaskHitboxBridge.onKeyCommitted();
+        syncTaskHitboxContext(null);
     }
 
     public void onTextInput(@Nullable String rawText) {
@@ -1263,6 +1271,8 @@ public class LatinIME extends InputMethodService implements
         updateStateAfterInputTransaction(completeInputTransaction);
         mInputLogic.restartSuggestionsOnWordTouchedByCursor(mSettings.getCurrent());
         mKeyboardSwitcher.onEvent(event, getCurrentAutoCapsState(), getCurrentRecapitalizeState());
+        com.tal.task.TaskHitboxBridge.onKeyCommitted();
+        syncTaskHitboxContext(null);
     }
 
     public void onStartBatchInput() {
@@ -1352,12 +1362,35 @@ public class LatinIME extends InputMethodService implements
         // touches a key that will insert it.
         AccessibilityUtils.Companion.getInstance().setAutoCorrection(suggestedWords);
         final helium314.keyboard.latin.suggestions.SuggestedWordInfo talTyped = suggestedWords.getTypedWordInfoOrNull();
-        final String talPrefix = (talTyped != null) ? talTyped.getWord() : "";
+        final String talPrefix = (talTyped != null) ? talTyped.getWord() : null;
+        syncTaskHitboxContext(talPrefix);
+    }
+
+    private void syncTaskHitboxContext(@Nullable final String fallbackPrefix) {
+        CharSequence before = null;
+        try {
+            final InputConnection ic = getCurrentInputConnection();
+            if (ic != null) {
+                before = ic.getTextBeforeCursor(512, 0);
+            }
+            if (before == null) {
+                before = mInputLogic.mConnection.getTextBeforeCursor(512, 0);
+            }
+        } catch (final Throwable ignored) {
+            before = null;
+        }
+        if (before == null && fallbackPrefix != null) {
+            before = fallbackPrefix;
+        }
         final String talLocale = mRichImm.getCurrentSubtype().getLocale().toLanguageTag();
-        com.tal.task.TaskHitboxBridge.updateComposingWord(this, talPrefix, talLocale);
+        com.tal.task.TaskHitboxBridge.updateFullTextContext(this, before, talLocale);
         final MainKeyboardView talKbView = mKeyboardSwitcher.getMainKeyboardView();
         if (talKbView != null) {
+            com.tal.task.TaskHitboxBridge.attachKeyboardView(talKbView);
             talKbView.invalidate();
+        }
+        if (hasSuggestionStripView()) {
+            mSuggestionStripView.refreshTaskVizPill();
         }
     }
 

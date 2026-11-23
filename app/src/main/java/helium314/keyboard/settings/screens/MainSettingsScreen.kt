@@ -463,7 +463,7 @@ fun MainSettingsScreen(
                                 TalRowDivider()
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_about),
-                                    subtitle = "T.A.S.K. v2.3.0 · Totally Accurate Labs (GPL-3.0)",
+                                    subtitle = "T.A.S.K. v2.4.0 · Totally Accurate Labs (GPL-3.0)",
                                     iconRes = R.drawable.ic_settings_about,
                                     onClick = onClickAbout
                                 )
@@ -485,6 +485,10 @@ fun MainSettingsScreen(
                                     TalMetricRow("Toques resgatados", "${telemetry.rescuedTaps}")
                                     TalMetricRow("Núcleo protegido (56%)", "${telemetry.coreProtectedTaps}")
                                     TalMetricRow("Offset vertical", "${"%.1f".format(telemetry.lastOffsetYPx)} px")
+                                    TalMetricRow("Palavras no contexto atual", "${telemetry.contextWordCount}")
+                                    val activePrev = telemetry.prevWord.ifEmpty { "—" }
+                                    val activePref = telemetry.currentPrefix.ifEmpty { "—" }
+                                    TalMetricRow("Contexto ativo", "$activePrev → $activePref")
                                 }
                             }
 

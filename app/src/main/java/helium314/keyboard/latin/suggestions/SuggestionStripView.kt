@@ -127,6 +127,7 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         resources.getDimensionPixelSize(R.dimen.config_suggestions_strip_edge_key_width),
         LinearLayout.LayoutParams.MATCH_PARENT
     )
+    private val taskVizPill: TextView
 
     init {
         val colors = Settings.getValues().mColors
@@ -169,9 +170,7 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
                 pinnedKeyInToolbar.background = enabledToolKeyBackground
         }
         // T.A.S.K. 1-tap Key Prediction Visualizer pill (OFF / PRED / ENG)
-        val taskVizPill = TextView(context).apply {
-            val mode = com.tal.task.TaskHitboxBridge.getVisualizerMode(context)
-            text = mode.label
+        taskVizPill = TextView(context).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = androidx.core.content.res.ResourcesCompat.getFont(context, R.font.jetbrains_mono) ?: android.graphics.Typeface.MONOSPACE
             gravity = android.view.Gravity.CENTER
@@ -181,19 +180,14 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
-            fun applyPillStyle(activeMode: com.tal.task.TaskHitboxBridge.VisualizerMode) {
-                text = activeMode.label
-                val active = activeMode != com.tal.task.TaskHitboxBridge.VisualizerMode.OFF
-                setTextColor(if (active) colors.get(ColorType.ACTION_KEY_BACKGROUND) else colors.get(ColorType.TOOL_BAR_KEY))
-            }
-            applyPillStyle(mode)
             setOnClickListener {
-                val next = com.tal.task.TaskHitboxBridge.cycleVisualizerMode(context)
-                applyPillStyle(next)
+                com.tal.task.TaskHitboxBridge.cycleVisualizerMode(context)
+                refreshTaskVizPill()
                 KeyboardSwitcher.getInstance().mainKeyboardView?.invalidate()
             }
         }
         pinnedKeys.addView(taskVizPill)
+        refreshTaskVizPill()
         toolbarContainer.doOnNextLayout {
             // set min with of the toolbar so the weight of the toolbar keys actually does something
             // todo: results in requestLayout() improperly called by android.widget.LinearLayout during layout: running second layout pass
@@ -322,8 +316,12 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
     override fun onVisibilityChanged(view: View, visibility: Int) {
         super.onVisibilityChanged(view, visibility)
         // workaround for a bug with inline suggestions views that just keep showing up otherwise, https://github.com/HeliBorg/HeliBoard/pull/386
-        if (view === this)
+        if (view === this) {
             suggestionsStrip.visibility = visibility
+            if (visibility == VISIBLE) {
+                refreshTaskVizPill()
+            }
+        }
     }
 
     override fun onDetachedFromWindow() {
@@ -530,8 +528,20 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         pinnedKeys.findViewWithTag<View>(ToolbarKey.VOICE)?.isVisible = show
     }
 
+    fun refreshTaskVizPill() {
+        val activeMode = com.tal.task.TaskHitboxBridge.getVisualizerMode(context)
+        val colors = Settings.getValues().mColors
+        taskVizPill.text = activeMode.label
+        val active = activeMode != com.tal.task.TaskHitboxBridge.VisualizerMode.OFF
+        taskVizPill.setTextColor(
+            if (active) colors.get(ColorType.ACTION_KEY_BACKGROUND)
+            else colors.get(ColorType.TOOL_BAR_KEY)
+        )
+    }
+
     private fun updateKeys() {
         updateVoiceKey()
+        refreshTaskVizPill()
         val settingsValues = Settings.getValues()
 
         val toolbarIsExpandable = settingsValues.mToolbarMode == ToolbarMode.EXPANDABLE
