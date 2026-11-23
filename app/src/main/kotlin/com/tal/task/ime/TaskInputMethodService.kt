@@ -8,12 +8,13 @@ import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import com.tal.task.data.AospDictionaryLoader
 import com.tal.task.data.LocalClipboardStore
 import com.tal.task.data.TaskPreferences
 import com.tal.task.data.TaskTelemetry
 import com.tal.task.data.ThemeMode
 import com.tal.task.data.UserDictionaryStore
-import com.tal.task.engine.BundledCorpus
+import com.tal.task.engine.EnterAction
 import com.tal.task.engine.Language
 import com.tal.task.engine.TrieDictionary
 import com.tal.task.engine.VisualizerMode
@@ -64,11 +65,7 @@ class TaskInputMethodService : InputMethodService(), KeyboardHostCallbacks {
         super.onCreate()
         prefs = TaskPreferences(this)
         userDictStore = UserDictionaryStore(this)
-        dictionaries = mapOf(
-            Language.PT_BR to BundledCorpus.createDictionary(Language.PT_BR),
-            Language.EN_US to BundledCorpus.createDictionary(Language.EN_US)
-        )
-        dictionaries.values.forEach { userDictStore.loadInto(it) }
+        dictionaries = AospDictionaryLoader.getOrLoad(this, userDictStore)
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboardManager?.addPrimaryClipChangedListener(clipListener)
@@ -103,6 +100,7 @@ class TaskInputMethodService : InputMethodService(), KeyboardHostCallbacks {
 
         keyboardView?.apply {
             applyConfig(prefs.config.value, resolveDarkTheme(prefs.config.value.themeMode))
+            setFieldAppearance(resolveEnterAction(info), isNumericOrPhoneField(info))
             updateFieldPolicy(isDynamicAllowedForField, isIncognitoField)
             updateComposingContext(currentPrefix, previousWord)
         }
@@ -269,6 +267,26 @@ class TaskInputMethodService : InputMethodService(), KeyboardHostCallbacks {
             val incognito = isPassword || isNoPersonalLearning
             val dynamicAllowed = !isPassword && !isUriOrEmail
             return FieldPolicy(incognito = incognito, dynamicAllowed = dynamicAllowed)
+        }
+
+        fun isNumericOrPhoneField(info: EditorInfo?): Boolean {
+            if (info == null) return false
+            val clazz = info.inputType and InputType.TYPE_MASK_CLASS
+            return clazz == InputType.TYPE_CLASS_NUMBER || clazz == InputType.TYPE_CLASS_PHONE
+        }
+
+        fun resolveEnterAction(info: EditorInfo?): EnterAction {
+            if (info == null) return EnterAction.NEWLINE
+            val noEnterAction = (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+            if (noEnterAction) return EnterAction.NEWLINE
+            return when (info.imeOptions and EditorInfo.IME_MASK_ACTION) {
+                EditorInfo.IME_ACTION_SEARCH -> EnterAction.SEARCH
+                EditorInfo.IME_ACTION_SEND -> EnterAction.SEND
+                EditorInfo.IME_ACTION_GO -> EnterAction.GO
+                EditorInfo.IME_ACTION_NEXT -> EnterAction.NEXT
+                EditorInfo.IME_ACTION_DONE -> EnterAction.DONE
+                else -> EnterAction.NEWLINE
+            }
         }
     }
 }

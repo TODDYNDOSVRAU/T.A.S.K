@@ -6,5 +6,7 @@ local.properties
 *.jks
 *.keystore
 *.apk
+*.idsig
+aosp-ref/
 .DS_Store
 Thumbs.db

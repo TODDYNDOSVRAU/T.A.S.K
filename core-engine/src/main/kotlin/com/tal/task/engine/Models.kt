@@ -32,7 +32,17 @@ enum class KeyboardLayer {
     ALPHA_UPPER,
     ALPHA_CAPS,
     SYMBOLS,
-    SYMBOLS_EXTENDED
+    SYMBOLS_EXTENDED,
+    NUMBER_PAD
+}
+
+enum class EnterAction(val glyph: String, val isPrimaryAction: Boolean) {
+    NEWLINE("↵", false),
+    SEARCH("⌕", true),
+    SEND("➤", true),
+    GO("→", true),
+    NEXT("⇥", false),
+    DONE("✓", true)
 }
 
 sealed class KeyAction {
@@ -54,7 +64,8 @@ data class KeySpec(
     val action: KeyAction,
     val weight: Float = 1f,
     val accents: List<Char> = emptyList(),
-    val isSpecial: Boolean = false
+    val isSpecial: Boolean = false,
+    val hintLabel: String? = null
 )
 
 data class KeyRect(

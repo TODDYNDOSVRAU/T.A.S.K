@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.tal.task.data.AospDictionaryLoader
 import com.tal.task.data.LocalClipboardStore
 import com.tal.task.data.TaskConfig
 import com.tal.task.data.TaskPreferences
@@ -59,7 +60,6 @@ import com.tal.task.data.TaskTelemetry
 import com.tal.task.data.TelemetrySnapshot
 import com.tal.task.data.ThemeMode
 import com.tal.task.data.UserDictionaryStore
-import com.tal.task.engine.BundledCorpus
 import com.tal.task.engine.HitboxSensitivity
 import com.tal.task.engine.Language
 import com.tal.task.engine.TrieDictionary
@@ -87,11 +87,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         prefs = TaskPreferences(this)
         userDictStore = UserDictionaryStore(this)
-        dictionaries = mapOf(
-            Language.PT_BR to BundledCorpus.createDictionary(Language.PT_BR),
-            Language.EN_US to BundledCorpus.createDictionary(Language.EN_US)
-        )
-        dictionaries.values.forEach { userDictStore.loadInto(it) }
+        dictionaries = AospDictionaryLoader.getOrLoad(this, userDictStore)
 
         setContent {
             val config by prefs.config.collectAsState()
@@ -492,6 +488,11 @@ private fun AdvancedScreen(
             title = "Autocorreção ao pressionar espaço (undo no backspace)",
             checked = config.autoCorrect,
             onCheckedChange = { v -> onUpdateConfig { it.copy(autoCorrect = v) } }
+        )
+        ToggleRow(
+            title = "Popup de prévia ao pressionar tecla (AOSP)",
+            checked = config.showKeyPreview,
+            onCheckedChange = { v -> onUpdateConfig { it.copy(showKeyPreview = v) } }
         )
         ToggleRow(
             title = "Feedback háptico nas teclas",

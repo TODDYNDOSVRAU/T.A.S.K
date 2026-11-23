@@ -20,6 +20,7 @@ import com.tal.task.data.LocalClipboardStore
 import com.tal.task.data.TaskConfig
 import com.tal.task.data.TaskTelemetry
 import com.tal.task.engine.DynamicHitboxEngine
+import com.tal.task.engine.EnterAction
 import com.tal.task.engine.HitboxSnapshot
 import com.tal.task.engine.KeyAction
 import com.tal.task.engine.KeyRect
@@ -66,6 +67,7 @@ class TaskKeyboardView @JvmOverloads constructor(
     private var incognitoField: Boolean = false
 
     private var layer: KeyboardLayer = KeyboardLayer.ALPHA_LOWER
+    private var enterAction: EnterAction = EnterAction.NEWLINE
     private var activePanel: ActivePanel = ActivePanel.KEYBOARD
 
     private var currentPrefix: String = ""
@@ -115,15 +117,29 @@ class TaskKeyboardView @JvmOverloads constructor(
         }
     }
 
-    // Geometry constants (T.A.L. 2x Grid: 6, 12, 24, 48 dp)
+    // Geometry constants derived from AOSP LatinIME (config_default_keyboard_height = 205.6dp,
+    // config_suggestions_strip_height = 40dp, config_key_preview_height_you = 60dp) aligned to T.A.L. grid
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
     private fun sp(v: Float): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics)
 
-    private val topBarHeightPx get() = dp(48f)
+    private val topBarHeightPx get() = dp(44f)
     private val engStripHeightPx get() = if (config.visualizerMode == VisualizerMode.ENGINEERING) dp(24f) else 0f
-    private val keyboardAreaHeightPx get() = dp(if (config.showNumberRow) 276f else 234f)
+    private val keyboardAreaHeightPx get() = dp(if (config.showNumberRow) 256f else 214f)
+
+    private val previewTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = sp(26f)
+    }
+    private val hintTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.RIGHT
+        textSize = sp(9.5f)
+    }
+    private val dividerPaint = Paint().apply {
+        strokeWidth = dp(1f)
+    }
+    private val keyShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     // Pre-allocated paints & rects (zero allocations inside onDraw)
     private val tempRect = RectF()
@@ -202,6 +218,8 @@ class TaskKeyboardView @JvmOverloads constructor(
         val mono = ResourcesCompat.getFont(context, R.font.jetbrains_mono) ?: Typeface.MONOSPACE
         val grotesk = ResourcesCompat.getFont(context, R.font.space_grotesk_700) ?: Typeface.DEFAULT_BOLD
         keyTextPaint.typeface = inter
+        previewTextPaint.typeface = interMed
+        hintTextPaint.typeface = mono
         specialTextPaint.typeface = grotesk
         suggestionTextPaint.typeface = interMed
         monoPaint.typeface = mono
@@ -212,6 +230,20 @@ class TaskKeyboardView @JvmOverloads constructor(
     fun bindDictionaries(dicts: Map<Language, TrieDictionary>) {
         dictionaries = dicts
         recomputePrediction()
+    }
+
+    fun setFieldAppearance(action: EnterAction, numberPad: Boolean) {
+        val nextLayer = if (numberPad) KeyboardLayer.NUMBER_PAD else {
+            if (layer == KeyboardLayer.NUMBER_PAD) KeyboardLayer.ALPHA_LOWER else layer
+        }
+        val changed = enterAction != action || layer != nextLayer
+        enterAction = action
+        layer = nextLayer
+        if (changed) {
+            rebuildLayout(width, height)
+            recomputePrediction()
+            invalidate()
+        }
     }
 
     fun applyConfig(newConfig: TaskConfig, darkTheme: Boolean) {
@@ -306,15 +338,16 @@ class TaskKeyboardView @JvmOverloads constructor(
         val rows = KeyboardLayoutSpec.buildRows(
             layer = layer,
             language = config.language,
-            showNumberRow = config.showNumberRow
+            showNumberRow = config.showNumberRow,
+            enterAction = enterAction
         )
         val rawKeys = KeyboardLayoutSpec.layoutKeys(
             rows = rows,
             totalWidth = w.toFloat(),
             totalHeight = kbHeight,
-            horizontalPadding = dp(6f),
+            horizontalPadding = dp(4f),
             verticalPadding = dp(6f),
-            keyGapX = dp(6f),
+            keyGapX = dp(5f),
             keyGapY = dp(8f)
         )
         // Offset Y by kbTop
@@ -374,10 +407,14 @@ class TaskKeyboardView @JvmOverloads constructor(
         bgPaint.color = colorTopBar
         canvas.drawRect(0f, 0f, width.toFloat(), topBarHeightPx, bgPaint)
 
-        // 3 suggestion slots
+        // 3 suggestion slots with AOSP subtle vertical dividers
         val textOffsetY = (suggestionTextPaint.descent() + suggestionTextPaint.ascent()) * 0.5f
+        dividerPaint.color = colorKeyBorder
         for (i in 0 until 3) {
             val rect = suggestionRects[i]
+            if (i > 0) {
+                canvas.drawLine(rect.left - dp(1f), rect.top + dp(6f), rect.left - dp(1f), rect.bottom - dp(6f), dividerPaint)
+            }
             val item = suggestions.getOrNull(i)
             if (item != null) {
                 if (item.isAutoCorrect && config.autoCorrect) {
@@ -456,32 +493,49 @@ class TaskKeyboardView @JvmOverloads constructor(
     private fun drawKeyboard(canvas: Canvas) {
         val snap = snapshot
         val viz = config.visualizerMode
-        val radius = dp(6f)
+        val keyRadius = dp(8f)
+        val lipOffset = dp(1.5f)
+        keyShadowPaint.color = if (isDarkTheme) 0xFF000000.toInt() else 0x33080808
 
-        // Pass 1: Key surfaces & labels
+        // Pass 1: AOSP Material-style Key surfaces, elevation lip, top-right hints & labels (T.A.L. palette)
         for (i in layoutKeys.indices) {
             val key = layoutKeys[i]
             val r = key.rect
-            tempRect.set(r.left, r.top, r.right, r.bottom)
-
             val isPressed = i == pressedKeyIndex
             val isShiftActive = key.spec.action == KeyAction.Shift &&
                 (layer == KeyboardLayer.ALPHA_UPPER || layer == KeyboardLayer.ALPHA_CAPS)
+            val isPrimaryEnter = key.spec.action == KeyAction.Enter && enterAction.isPrimaryAction
+            val isPillKey = key.spec.action == KeyAction.Space || key.spec.action == KeyAction.Enter
+            val radius = if (isPillKey) (r.height * 0.45f).coerceAtMost(dp(20f)) else keyRadius
 
+            // Subtle AOSP key bottom lip (elevation)
+            if (!isPressed) {
+                tempRect.set(r.left, r.top + lipOffset, r.right, r.bottom + lipOffset)
+                canvas.drawRoundRect(tempRect, radius, radius, keyShadowPaint)
+            }
+
+            tempRect.set(r.left, r.top, r.right, r.bottom)
             keyPaint.color = when {
                 isPressed -> colorPressedKey
-                isShiftActive -> colorAccent
+                isShiftActive || isPrimaryEnter -> colorAccent
                 key.spec.isSpecial -> colorSpecialKey
                 else -> colorKey
             }
             canvas.drawRoundRect(tempRect, radius, radius, keyPaint)
 
-            keyBorderPaint.color = colorKeyBorder
+            keyBorderPaint.color = if (isShiftActive || isPrimaryEnter) colorAccent else colorKeyBorder
             canvas.drawRoundRect(tempRect, radius, radius, keyBorderPaint)
+
+            // AOSP top-right hint label (e.g., 1..0 on q..p, ? on .)
+            val hint = key.spec.hintLabel
+            if (hint != null && viz != VisualizerMode.ENGINEERING) {
+                hintTextPaint.color = colorSecondary
+                canvas.drawText(hint, r.right - dp(4f), r.top + dp(10.5f), hintTextPaint)
+            }
 
             val paint = if (key.spec.isSpecial || key.spec.action == KeyAction.Space) specialTextPaint else keyTextPaint
             paint.color = when {
-                isShiftActive -> colorOnAccent
+                isShiftActive || isPrimaryEnter -> colorOnAccent
                 key.spec.action == KeyAction.Space -> colorSecondary
                 else -> colorText
             }
@@ -536,10 +590,37 @@ class TaskKeyboardView @JvmOverloads constructor(
             }
         }
 
-        // Pass 3: Long-press Accent Popup Bar
+        // Pass 3: AOSP Key Preview Pop-up Bubble (config_key_preview_height_you = 60 dp)
+        if (config.showKeyPreview && accentPopupKey == null && pressedKeyIndex in layoutKeys.indices) {
+            val pressed = layoutKeys[pressedKeyIndex]
+            if (pressed.spec.action is KeyAction.Character) {
+                drawKeyPreviewBubble(canvas, pressed)
+            }
+        }
+
+        // Pass 4: Long-press Accent Popup Bar
         accentPopupKey?.let { key ->
             drawAccentPopup(canvas, key)
         }
+    }
+
+    private fun drawKeyPreviewBubble(canvas: Canvas, key: LayoutKey) {
+        val r = key.rect
+        val bubbleW = (r.width * 1.45f).coerceAtLeast(dp(44f))
+        val bubbleH = dp(56f)
+        val left = (r.centerX - bubbleW * 0.5f).coerceIn(dp(4f), (width - bubbleW - dp(4f)).coerceAtLeast(dp(4f)))
+        val bottom = (r.top - dp(4f)).coerceAtLeast(dp(4f))
+        val top = (bottom - bubbleH).coerceAtLeast(dp(2f))
+
+        popupRect.set(left, top, left + bubbleW, bottom)
+        keyPaint.color = if (isDarkTheme) 0xFF2D2D2D.toInt() else 0xFFFFFFFF.toInt()
+        canvas.drawRoundRect(popupRect, dp(12f), dp(12f), keyPaint)
+        overlayStrokePaint.color = colorAccent
+        canvas.drawRoundRect(popupRect, dp(12f), dp(12f), overlayStrokePaint)
+
+        previewTextPaint.color = colorText
+        val dy = (previewTextPaint.descent() + previewTextPaint.ascent()) * 0.5f
+        canvas.drawText(key.spec.label, popupRect.centerX(), popupRect.centerY() - dy, previewTextPaint)
     }
 
     private fun drawAccentPopup(canvas: Canvas, key: LayoutKey) {

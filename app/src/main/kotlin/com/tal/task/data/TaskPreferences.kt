@@ -22,7 +22,8 @@ data class TaskConfig(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val showNumberRow: Boolean = false,
     val autoCorrect: Boolean = true,
-    val hapticsEnabled: Boolean = true
+    val hapticsEnabled: Boolean = true,
+    val showKeyPreview: Boolean = true
 )
 
 class TaskPreferences(context: Context) {
@@ -48,7 +49,8 @@ class TaskPreferences(context: Context) {
         themeMode = ThemeMode.entries.getOrElse(prefs.getInt(KEY_THEME, 1)) { ThemeMode.DARK },
         showNumberRow = prefs.getBoolean(KEY_NUMBER_ROW, false),
         autoCorrect = prefs.getBoolean(KEY_AUTOCORRECT, true),
-        hapticsEnabled = prefs.getBoolean(KEY_HAPTICS, true)
+        hapticsEnabled = prefs.getBoolean(KEY_HAPTICS, true),
+        showKeyPreview = prefs.getBoolean(KEY_PREVIEW, true)
     )
 
     fun update(transform: (TaskConfig) -> TaskConfig) {
@@ -61,6 +63,7 @@ class TaskPreferences(context: Context) {
             .putBoolean(KEY_NUMBER_ROW, next.showNumberRow)
             .putBoolean(KEY_AUTOCORRECT, next.autoCorrect)
             .putBoolean(KEY_HAPTICS, next.hapticsEnabled)
+            .putBoolean(KEY_PREVIEW, next.showKeyPreview)
             .apply()
         _config.value = next
     }
@@ -77,5 +80,6 @@ class TaskPreferences(context: Context) {
         private const val KEY_NUMBER_ROW = "number_row"
         private const val KEY_AUTOCORRECT = "autocorrect"
         private const val KEY_HAPTICS = "haptics"
+        private const val KEY_PREVIEW = "key_preview"
     }
 }
