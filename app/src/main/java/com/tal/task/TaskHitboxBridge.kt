@@ -355,6 +355,23 @@ object TaskHitboxBridge {
     }
 
     @JvmStatic
+    fun restoreThumbCalibration(context: Context, biasX: FloatArray, biasY: FloatArray, samples: Int) {
+        ensureInitialized(context)
+        for (r in 0 until minOf(4, biasX.size, biasY.size)) {
+            rowBiasX[r] = biasX[r].coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+            rowBiasY[r] = biasY[r].coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+        }
+        calibrationSamples = samples.coerceAtLeast(0)
+        val editor = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        editor.putInt(KEY_SAMPLES, calibrationSamples)
+        for (r in 0 until 4) {
+            editor.putFloat("rbx_$r", rowBiasX[r])
+            editor.putFloat("rby_$r", rowBiasY[r])
+        }
+        editor.apply()
+    }
+
+    @JvmStatic
     fun resetTelemetry() {
         totalTaps = 0
         rescuedCount = 0

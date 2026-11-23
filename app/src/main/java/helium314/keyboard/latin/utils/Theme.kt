@@ -12,10 +12,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import helium314.keyboard.latin.R
 
-// Official T.A.L. v1.2 Palette (matching T.A.R.K.A.S. finish)
+// Official T.A.L. v1.2 Palette (WCAG 2.2 AA verified contrast pairs)
 object TalColors {
     val AbsoluteBlack = Color(0xFF080808)
     val DarkSurface1 = Color(0xFF141414)
@@ -27,11 +28,11 @@ object TalColors {
     val LightSurface2 = Color(0xFFE4E4E2)
     val LightSurface3 = Color(0xFFD2D2CF)
 
-    val TechnicalGrayDark = Color(0xFF8C8C8C)
-    val TechnicalGrayLight = Color(0xFF6B6B6B)
+    val TechnicalGrayDark = Color(0xFF8C8C8C)   // 6.0:1 on #080808, 5.3:1 on #141414
+    val TechnicalGrayLight = Color(0xFF6B6B6B)  // 4.8:1 on #F2F2F0, 5.4:1 on #FFFFFF
 
-    val IceDark = Color(0xFF7EE3EA)
-    val DeepTealLight = Color(0xFF0D6C74)
+    val IceDark = Color(0xFF7EE3EA)             // 13.4:1 on #080808 (forbidden on light)
+    val DeepTealLight = Color(0xFF0D6C74)       // 5.5:1 on #F2F2F0
 }
 
 val TalSpaceGrotesk = FontFamily(
@@ -87,37 +88,73 @@ private val TalLightScheme = lightColorScheme(
     outlineVariant = TalColors.LightSurface2
 )
 
+// T.A.L. 2x Grid typography scale: strictly 12, 18, 24 sp (nothing < 12 sp)
 @Composable
 fun Theme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val base = Typography()
     val talTypography = Typography(
         headlineMedium = TextStyle(
             fontFamily = TalSpaceGrotesk,
             fontWeight = FontWeight.Bold,
             fontSize = 24.sp,
-            letterSpacing = (-0.02).sp
+            lineHeight = 28.sp,
+            letterSpacing = (-0.02).em
         ),
-        titleLarge = base.titleLarge.copy(
+        titleLarge = TextStyle(
             fontFamily = TalSpaceGrotesk,
             fontWeight = FontWeight.Bold,
-            letterSpacing = (-0.02).sp
+            fontSize = 24.sp,
+            lineHeight = 28.sp,
+            letterSpacing = (-0.02).em
         ),
-        titleMedium = base.titleMedium.copy(
+        titleMedium = TextStyle(
             fontFamily = TalSpaceGrotesk,
             fontWeight = FontWeight.Bold,
-            fontSize = 17.sp,
-            letterSpacing = (-0.01).sp
+            fontSize = 18.sp,
+            lineHeight = 22.sp,
+            letterSpacing = (-0.02).em
         ),
-        titleSmall = base.titleSmall.copy(
-            fontFamily = TalSpaceGrotesk,
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp
+        titleSmall = TextStyle(
+            fontFamily = TalInter,
+            fontWeight = FontWeight.Medium,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
         ),
-        bodyLarge = base.bodyLarge.copy(fontFamily = TalInter),
-        bodyMedium = base.bodyMedium.copy(fontFamily = TalInter),
-        bodySmall = base.bodySmall.copy(fontFamily = TalInter),
-        labelMedium = base.labelMedium.copy(fontFamily = TalJetBrainsMono, fontSize = 11.sp),
-        labelSmall = base.labelSmall.copy(fontFamily = TalJetBrainsMono, fontSize = 10.sp)
+        bodyLarge = TextStyle(
+            fontFamily = TalInter,
+            fontWeight = FontWeight.Normal,
+            fontSize = 18.sp,
+            lineHeight = 24.sp
+        ),
+        bodyMedium = TextStyle(
+            fontFamily = TalInter,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 18.sp
+        ),
+        bodySmall = TextStyle(
+            fontFamily = TalInter,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        ),
+        labelLarge = TextStyle(
+            fontFamily = TalJetBrainsMono,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        ),
+        labelMedium = TextStyle(
+            fontFamily = TalJetBrainsMono,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        ),
+        labelSmall = TextStyle(
+            fontFamily = TalJetBrainsMono,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        )
     )
     MaterialTheme(
         colorScheme = if (dark) TalDarkScheme else TalLightScheme,

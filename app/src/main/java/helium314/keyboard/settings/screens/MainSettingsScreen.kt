@@ -1,20 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package helium314.keyboard.settings.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -31,6 +48,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -40,17 +61,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tal.task.TaskHitboxBridge
@@ -67,6 +96,8 @@ import helium314.keyboard.latin.utils.previewDark
 import helium314.keyboard.settings.initPreview
 import helium314.keyboard.settings.screens.gesturedata.END_DATE_EPOCH_MILLIS
 import helium314.keyboard.settings.screens.gesturedata.TWO_WEEKS_IN_MILLIS
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private enum class TaskSettingsLayer(val label: String) {
     ESSENTIAL("ESSENTIAL"),
@@ -74,8 +105,37 @@ private enum class TaskSettingsLayer(val label: String) {
     ENGINEERING("ENGINEERING")
 }
 
-private val CardShape = RoundedCornerShape(16.dp)
-private val PillShape = RoundedCornerShape(10.dp)
+// T.A.L. 2x Grid constants (ui.md §6): 6, 12, 24, 48 dp
+private val ScreenMargin = 24.dp
+private val GridInset = 12.dp
+private val SegmentedInset = 6.dp
+private val TouchTargetMin = 48.dp
+private val CardShape = RoundedCornerShape(12.dp)
+private val InnerPillShape = RoundedCornerShape(6.dp)
+
+// Apple WWDC critical no-bounce spring (response ≈ 0.30s -> stiffness = (2π/0.3)² ≈ 439)
+private val AppleCriticalSpring = spring<Float>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = 439f
+)
+private val TalEaseOut = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f)
+
+/**
+ * Apple WWDC pointer-down response: immediate 0.96 scale rendered in graphicsLayer
+ * (zero recomposition, zero neighbor shift, interruptible mid-flight).
+ */
+private fun Modifier.applePressScale(interactionSource: MutableInteractionSource): Modifier = composed {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = AppleCriticalSpring,
+        label = "applePressScale"
+    )
+    graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
 
 @Composable
 fun MainSettingsScreen(
@@ -93,7 +153,11 @@ fun MainSettingsScreen(
     onClickBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     val enabledSubtypes = SubtypeSettings.getEnabledSubtypes(true)
+
     var activeLayer by rememberSaveable { mutableStateOf(TaskSettingsLayer.ESSENTIAL) }
     var refreshTick by remember { mutableIntStateOf(0) }
     var testInput by rememberSaveable { mutableStateOf("") }
@@ -107,411 +171,438 @@ fun MainSettingsScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .imePadding()
                 .padding(innerPadding)
         ) {
-            // T.A.R.K.A.S.-style Editorial Header + 3 Product Layers Switcher
+            // Editorial Header on 24 dp outer margin, 12 dp vertical rhythm
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = ScreenMargin, vertical = GridInset),
+                verticalArrangement = Arrangement.spacedBy(GridInset)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "T.A.S.K.",
                             style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onBackground
+                            color = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.semantics { heading() }
                         )
                         Text(
                             text = "Totally Accurate Smart Keyboard",
-                            fontFamily = TalJetBrainsMono,
-                            fontSize = 11.sp,
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Surface(
                         color = MaterialTheme.colorScheme.surface,
-                        shape = PillShape,
+                        shape = InnerPillShape,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
                         Text(
-                            text = "OFFLINE · AOSP C++",
-                            fontFamily = TalJetBrainsMono,
-                            fontSize = 10.sp,
+                            text = "OFFLINE",
+                            style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            modifier = Modifier.padding(horizontal = GridInset, vertical = SegmentedInset)
                         )
                     }
                 }
 
-                // Segmented 3-Layer Pill Bar (48 dp touch target)
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        TaskSettingsLayer.entries.forEach { layer ->
-                            val selected = layer == activeLayer
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(40.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surface
-                                    )
-                                    .clickable {
-                                        activeLayer = layer
-                                        refreshTick++
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = layer.label,
-                                    fontFamily = TalJetBrainsMono,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (selected) MaterialTheme.colorScheme.onPrimary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                // Interruptible Spring-Sliding 3-Layer Segmented Control (48 dp target)
+                TalAppleSegmentedControl(
+                    labels = TaskSettingsLayer.entries.map { it.label },
+                    selectedIndex = activeLayer.ordinal,
+                    onSelect = { idx ->
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        activeLayer = TaskSettingsLayer.entries[idx]
+                        refreshTick++
                     }
-                }
+                )
             }
 
-            // Layer Content
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                when (activeLayer) {
-                    TaskSettingsLayer.ESSENTIAL -> {
-                        // 1. Live Typing Playground Card
-                        TalSectionCard(title = "PLAYGROUND · TESTE AO VIVO") {
-                            OutlinedTextField(
-                                value = testInput,
-                                onValueChange = {
-                                    testInput = it
-                                    refreshTick++
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                placeholder = {
-                                    Text(
-                                        "Toque aqui para testar o T.A.S.K. com hitboxes dinâmicos e offset do polegar...",
-                                        fontFamily = TalInter,
-                                        fontSize = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                    focusedContainerColor = MaterialTheme.colorScheme.background,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.background
-                                ),
-                                minLines = 2,
-                                maxLines = 4
-                            )
-                        }
-
-                        // 2. Apple/iPhone Bayesian Ergonomics & Visualizer Quick Controls
-                        TalSectionCard(title = "PRECISÃO ESTILO IPHONE & VISUALIZADOR") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text(
-                                    text = "Modo do Visualizador (botão rápido na barra do teclado)",
-                                    fontFamily = TalInter,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                TalSegmentedRow(
-                                    labels = TaskHitboxBridge.VisualizerMode.entries.map { it.label },
-                                    selectedIndex = telemetry.visualizerMode.ordinal,
-                                    onSelect = { idx ->
-                                        TaskHitboxBridge.setVisualizerMode(
-                                            context,
-                                            TaskHitboxBridge.VisualizerMode.entries[idx]
-                                        )
-                                        refreshTick++
-                                    }
-                                )
-
-                                Text(
-                                    text = "Sensibilidade Bayesiana 2D (núcleo central 56% protegido)",
-                                    fontFamily = TalInter,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                TalSegmentedRow(
-                                    labels = TaskHitboxBridge.Sensitivity.entries.map { it.label },
-                                    selectedIndex = telemetry.sensitivity.ordinal,
-                                    onSelect = { idx ->
-                                        TaskHitboxBridge.setSensitivity(
-                                            context,
-                                            TaskHitboxBridge.Sensitivity.entries[idx]
-                                        )
-                                        refreshTick++
-                                    }
-                                )
-
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                                        Text(
-                                            text = "Calibração adaptativa do polegar",
-                                            fontFamily = TalSpaceGrotesk,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Compensa paralaxe vertical por fileira (apenas floats dx/dy, zero texto)",
-                                            fontFamily = TalInter,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Switch(
-                                        checked = telemetry.adaptiveEnabled,
-                                        onCheckedChange = { enabled ->
-                                            TaskHitboxBridge.setAdaptiveThumbEnabled(context, enabled)
-                                            refreshTick++
-                                        },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                                            checkedTrackColor = MaterialTheme.colorScheme.primary
-                                        )
-                                    )
-                                }
-                            }
-                        }
-
-                        // 3. Core AOSP Keyboard Settings
-                        TalSectionCard(title = "CONFIGURAÇÃO DO TECLADO") {
-                            TalSettingRow(
-                                title = stringResource(R.string.language_and_layouts_title),
-                                subtitle = enabledSubtypes.joinToString(", ") { it.displayName() },
-                                iconRes = R.drawable.ic_settings_languages,
-                                onClick = onClickLanguage
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_appearance),
-                                subtitle = "Temas T.A.L. Dark / Light, altura 1.06x e bordas",
-                                iconRes = R.drawable.ic_settings_appearance,
-                                onClick = onClickAppearance
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_correction),
-                                subtitle = "Autocorreção nativa AOSP C++ e sugestões",
-                                iconRes = R.drawable.ic_settings_correction,
-                                onClick = onClickTextCorrection
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.dictionary_settings_category),
-                                subtitle = "S23 PT-BR (169k) + EN-US (129k) offline",
-                                iconRes = R.drawable.ic_dictionary,
-                                onClick = onClickDictionaries
-                            )
-                        }
-                    }
-
-                    TaskSettingsLayer.ADVANCED -> {
-                        TalSectionCard(title = "ERGONOMIA, LAYOUT E BARRA") {
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_preferences),
-                                subtitle = "Háptico seco Taptic (8 ms), popup de tecla e som",
-                                iconRes = R.drawable.ic_settings_preferences,
-                                onClick = onClickPreferences
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_toolbar),
-                                subtitle = "Chaves fixadas, clipboard e barra superior",
-                                iconRes = R.drawable.ic_settings_toolbar,
-                                onClick = onClickToolbar
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_secondary_layouts),
-                                subtitle = "Símbolos, teclado numérico 3x4 e emojis",
-                                iconRes = R.drawable.ic_settings_layout,
-                                onClick = onClickLayouts
-                            )
-                            if (JniUtils.sHaveGestureLib) {
-                                TalRowDivider()
-                                TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_gesture),
-                                    subtitle = "Digitação por gestos (biblioteca nativa)",
-                                    iconRes = R.drawable.ic_settings_gesture,
-                                    onClick = onClickGestureTyping
-                                )
-                            }
-                            if (JniUtils.sHaveGestureLib && System.currentTimeMillis() < END_DATE_EPOCH_MILLIS + TWO_WEEKS_IN_MILLIS) {
-                                TalRowDivider()
-                                TalSettingRow(
-                                    title = stringResource(R.string.gesture_data_screen),
-                                    subtitle = null,
-                                    iconRes = R.drawable.ic_settings_gesture,
-                                    onClick = onClickDataGathering
-                                )
-                            }
-                        }
-
-                        TalSectionCard(title = "SISTEMA") {
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_advanced),
-                                subtitle = "Ajustes avançados do motor AOSP LatinIME",
-                                iconRes = R.drawable.ic_settings_advanced,
-                                onClick = onClickAdvanced
-                            )
-                            TalRowDivider()
-                            TalSettingRow(
-                                title = stringResource(R.string.settings_screen_about),
-                                subtitle = "T.A.S.K. v2.1.0 · Totally Accurate Labs (GPL-3.0)",
-                                iconRes = R.drawable.ic_settings_about,
-                                onClick = onClickAbout
-                            )
-                        }
-                    }
-
-                    TaskSettingsLayer.ENGINEERING -> {
-                        TalSectionCard(title = "TELEMETRIA BAYESIANA 2D (META <= 2.00 ms)") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TalMetricRow("p99 resolução de toque", "${"%.3f".format(telemetry.p99LatencyMs)} ms")
-                                TalMetricRow("Última resolução", "${"%.3f".format(telemetry.lastLatencyMs)} ms")
-                                TalMetricRow("Último mapeamento", "${telemetry.lastGeoChar} -> ${telemetry.lastResChar} (${telemetry.lastProbPercent}%)")
-                                TalMetricRow("Total de toques analisados", "${telemetry.totalTaps}")
-                                TalMetricRow("Toques resgatados (Bayes + offset)", "${telemetry.rescuedTaps}")
-                                TalMetricRow("Toques garantidos pelo núcleo (56%)", "${telemetry.coreProtectedTaps}")
-                                TalMetricRow("Último offset vertical aplicado", "${"%.1f".format(telemetry.lastOffsetYPx)} px")
-                            }
-                        }
-
-                        TalSectionCard(title = "CALIBRAÇÃO ADAPTATIVA DO POLEGAR (POR FILEIRA)") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val rowNames = listOf("Fileira 0 (QWERTY)", "Fileira 1 (ASDF)", "Fileira 2 (ZXCV)", "Fileira 3 (Base)")
-                                for (r in 0 until 4) {
-                                    val bx = telemetry.rowBiasX[r] * 100f
-                                    val by = telemetry.rowBiasY[r] * 100f
-                                    TalMetricRow(rowNames[r], "dx=${"%+.1f".format(bx)}%  dy=${"%+.1f".format(by)}%")
-                                }
-                                TalMetricRow("Amostras acumuladas", "${telemetry.calibrationSamples}")
-                                Spacer(Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            TaskHitboxBridge.resetThumbCalibration(context)
-                                            refreshTick++
-                                        },
-                                        modifier = Modifier.weight(1f).height(44.dp),
-                                        shape = PillShape,
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                                    ) {
-                                        Text("Resetar polegar", fontFamily = TalJetBrainsMono, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            TaskHitboxBridge.resetTelemetry()
-                                            refreshTick++
-                                        },
-                                        modifier = Modifier.weight(1f).height(44.dp),
-                                        shape = PillShape,
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                                    ) {
-                                        Text("Zerar métricas", fontFamily = TalJetBrainsMono, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
-                                    }
-                                }
-                            }
-                        }
-
-                        TalSectionCard(title = "AUDITORIA DE PRIVACIDADE & MOTOR") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TalMetricRow("Motor nativo", "AOSP C++ libjni_latinime.so")
-                                TalMetricRow("Permissão INTERNET", "AUSENTE (0)")
-                                TalMetricRow("Dicionários S23", "PT-BR (169k) + EN-US (129k)")
-                                TalMetricRow("Dados da calibração", "Apenas floats (dx, dy), zero texto")
-                                TalMetricRow("Proteção em senha/URI/Email", "Hitbox estático + zero gravação")
-                            }
-                        }
-                    }
-                }
-
-                // T.A.L. Fixed Signature Footer
+            // Fluid Apple view transition: 150 ms out / 260 ms in, ease-out, zero input lock-out
+            AnimatedContent(
+                targetState = activeLayer,
+                transitionSpec = {
+                    (fadeIn(tween(260, easing = TalEaseOut)) +
+                        slideInVertically(tween(260, easing = TalEaseOut)) { it / 18 }) togetherWith
+                        fadeOut(tween(150, easing = TalEaseOut))
+                },
+                modifier = Modifier.weight(1f),
+                label = "taskLayerTransition"
+            ) { layer ->
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = ScreenMargin),
+                    verticalArrangement = Arrangement.spacedBy(GridInset)
                 ) {
-                    Text(
-                        text = "Developed by Totally Accurate Labs.",
-                        fontFamily = TalJetBrainsMono,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "© 2026 Totally Accurate Labs · MADE BY T.A.L.",
-                        fontFamily = TalJetBrainsMono,
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    when (layer) {
+                        TaskSettingsLayer.ESSENTIAL -> {
+                            // 1. Live Typing Playground Card
+                            TalSectionCard(title = "PLAYGROUND · TESTE AO VIVO") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    OutlinedTextField(
+                                        value = testInput,
+                                        onValueChange = {
+                                            testInput = it
+                                            refreshTick++
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        ),
+                                        placeholder = {
+                                            Text(
+                                                "Toque aqui para digitar com Dynamic Tap Zones e paralaxe do polegar.",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        },
+                                        shape = CardShape,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                            focusedContainerColor = MaterialTheme.colorScheme.background,
+                                            unfocusedContainerColor = MaterialTheme.colorScheme.background
+                                        ),
+                                        minLines = 2,
+                                        maxLines = 4
+                                    )
+                                    val statusText = "Zonas ${telemetry.visualizerMode.label} · ${telemetry.sensitivity.label} · núcleo 56% · ${telemetry.rescuedTaps} resgates"
+                                    Text(
+                                        text = statusText,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // 2. Apple/iPhone Dynamic Tap Zones & Ergonomics Controls
+                            TalSectionCard(title = "PRECISÃO ESTILO IPHONE") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    Text(
+                                        text = "Visualizador de Dynamic Tap Zones",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    TalAppleSegmentedControl(
+                                        labels = TaskHitboxBridge.VisualizerMode.entries.map { it.label },
+                                        selectedIndex = telemetry.visualizerMode.ordinal,
+                                        onSelect = { idx ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            TaskHitboxBridge.setVisualizerMode(
+                                                context,
+                                                TaskHitboxBridge.VisualizerMode.entries[idx]
+                                            )
+                                            refreshTick++
+                                        }
+                                    )
+
+                                    Text(
+                                        text = "Amplitude de adaptação das zonas",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    TalAppleSegmentedControl(
+                                        labels = TaskHitboxBridge.Sensitivity.entries.map { it.label },
+                                        selectedIndex = telemetry.sensitivity.ordinal,
+                                        onSelect = { idx ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            TaskHitboxBridge.setSensitivity(
+                                                context,
+                                                TaskHitboxBridge.Sensitivity.entries[idx]
+                                            )
+                                            refreshTick++
+                                        }
+                                    )
+
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = TouchTargetMin)
+                                            .semantics(mergeDescendants = true) {},
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f).padding(end = GridInset)) {
+                                            Text(
+                                                text = "Calibração adaptativa do polegar",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Compensa paralaxe vertical por fileira (apenas floats dx/dy)",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Switch(
+                                            checked = telemetry.adaptiveEnabled,
+                                            onCheckedChange = { enabled ->
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                TaskHitboxBridge.setAdaptiveThumbEnabled(context, enabled)
+                                                refreshTick++
+                                            },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                                                checkedTrackColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 3. Core AOSP Settings
+                            TalSectionCard(title = "TECLADO") {
+                                TalSettingRow(
+                                    title = stringResource(R.string.language_and_layouts_title),
+                                    subtitle = enabledSubtypes.joinToString(", ") { it.displayName() },
+                                    iconRes = R.drawable.ic_settings_languages,
+                                    onClick = onClickLanguage
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_appearance),
+                                    subtitle = "T.A.L. Dark / Light · altura 1.06x · bordas",
+                                    iconRes = R.drawable.ic_settings_appearance,
+                                    onClick = onClickAppearance
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_correction),
+                                    subtitle = "Autocorreção nativa AOSP C++ e sugestões",
+                                    iconRes = R.drawable.ic_settings_correction,
+                                    onClick = onClickTextCorrection
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.dictionary_settings_category),
+                                    subtitle = "S23 PT-BR (169k) · EN-US (129k) offline",
+                                    iconRes = R.drawable.ic_dictionary,
+                                    onClick = onClickDictionaries
+                                )
+                            }
+                        }
+
+                        TaskSettingsLayer.ADVANCED -> {
+                            TalSectionCard(title = "ERGONOMIA, LAYOUT E BARRA") {
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_preferences),
+                                    subtitle = "Háptico seco Taptic (8 ms) · popup · som",
+                                    iconRes = R.drawable.ic_settings_preferences,
+                                    onClick = onClickPreferences
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_toolbar),
+                                    subtitle = "Chaves fixadas · clipboard · barra superior",
+                                    iconRes = R.drawable.ic_settings_toolbar,
+                                    onClick = onClickToolbar
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_secondary_layouts),
+                                    subtitle = "Símbolos · teclado numérico 3x4 · emojis",
+                                    iconRes = R.drawable.ic_settings_layout,
+                                    onClick = onClickLayouts
+                                )
+                                if (JniUtils.sHaveGestureLib) {
+                                    TalRowDivider()
+                                    TalSettingRow(
+                                        title = stringResource(R.string.settings_screen_gesture),
+                                        subtitle = "Digitação por gestos (biblioteca nativa)",
+                                        iconRes = R.drawable.ic_settings_gesture,
+                                        onClick = onClickGestureTyping
+                                    )
+                                }
+                                if (JniUtils.sHaveGestureLib && System.currentTimeMillis() < END_DATE_EPOCH_MILLIS + TWO_WEEKS_IN_MILLIS) {
+                                    TalRowDivider()
+                                    TalSettingRow(
+                                        title = stringResource(R.string.gesture_data_screen),
+                                        subtitle = null,
+                                        iconRes = R.drawable.ic_settings_gesture,
+                                        onClick = onClickDataGathering
+                                    )
+                                }
+                            }
+
+                            TalSectionCard(title = "SISTEMA") {
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_advanced),
+                                    subtitle = "Parâmetros avançados do AOSP LatinIME",
+                                    iconRes = R.drawable.ic_settings_advanced,
+                                    onClick = onClickAdvanced
+                                )
+                                TalRowDivider()
+                                TalSettingRow(
+                                    title = stringResource(R.string.settings_screen_about),
+                                    subtitle = "T.A.S.K. v2.3.0 · Totally Accurate Labs (GPL-3.0)",
+                                    iconRes = R.drawable.ic_settings_about,
+                                    onClick = onClickAbout
+                                )
+                            }
+                        }
+
+                        TaskSettingsLayer.ENGINEERING -> {
+                            TalSectionCard(title = "TELEMETRIA DE TOQUE (META <= 2.00 ms)") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    TalMetricRow("p99 resolução", "${"%.3f".format(telemetry.p99LatencyMs)} ms")
+                                    TalMetricRow("Última resolução", "${"%.3f".format(telemetry.lastLatencyMs)} ms")
+                                    TalMetricRow("Último mapeamento", "${telemetry.lastGeoChar} -> ${telemetry.lastResChar} (${telemetry.lastProbPercent}%)")
+                                    TalMetricRow("Total de toques", "${telemetry.totalTaps}")
+                                    TalMetricRow("Toques resgatados", "${telemetry.rescuedTaps}")
+                                    TalMetricRow("Núcleo protegido (56%)", "${telemetry.coreProtectedTaps}")
+                                    TalMetricRow("Offset vertical", "${"%.1f".format(telemetry.lastOffsetYPx)} px")
+                                }
+                            }
+
+                            TalSectionCard(title = "CALIBRAÇÃO DO POLEGAR (POR FILEIRA)") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    val rowNames = listOf("Fileira 0 (QWERTY)", "Fileira 1 (ASDF)", "Fileira 2 (ZXCV)", "Fileira 3 (Base)")
+                                    for (r in 0 until 4) {
+                                        val bx = telemetry.rowBiasX[r] * 100f
+                                        val by = telemetry.rowBiasY[r] * 100f
+                                        TalMetricRow(rowNames[r], "dx=${"%+.1f".format(bx)}%  dy=${"%+.1f".format(by)}%")
+                                    }
+                                    TalMetricRow("Amostras acumuladas", "${telemetry.calibrationSamples}")
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(GridInset)
+                                    ) {
+                                        val resetInteraction = remember { MutableInteractionSource() }
+                                        OutlinedButton(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                val prevX = telemetry.rowBiasX.copyOf()
+                                                val prevY = telemetry.rowBiasY.copyOf()
+                                                val prevSamples = telemetry.calibrationSamples
+                                                TaskHitboxBridge.resetThumbCalibration(context)
+                                                refreshTick++
+                                                scope.launch {
+                                                    val res = snackbarHostState.showSnackbar(
+                                                        message = "Calibração do polegar restaurada para o padrão.",
+                                                        actionLabel = "Desfazer",
+                                                        duration = SnackbarDuration.Short
+                                                    )
+                                                    if (res == SnackbarResult.ActionPerformed) {
+                                                        TaskHitboxBridge.restoreThumbCalibration(context, prevX, prevY, prevSamples)
+                                                        refreshTick++
+                                                    }
+                                                }
+                                            },
+                                            interactionSource = resetInteraction,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(TouchTargetMin)
+                                                .applePressScale(resetInteraction),
+                                            shape = InnerPillShape,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                        ) {
+                                            Text(
+                                                "Restaurar polegar",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+
+                                        val clearInteraction = remember { MutableInteractionSource() }
+                                        OutlinedButton(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                TaskHitboxBridge.resetTelemetry()
+                                                refreshTick++
+                                            },
+                                            interactionSource = clearInteraction,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(TouchTargetMin)
+                                                .applePressScale(clearInteraction),
+                                            shape = InnerPillShape,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                        ) {
+                                            Text(
+                                                "Zerar métricas",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            TalSectionCard(title = "AUDITORIA DE PRIVACIDADE & MOTOR") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    TalMetricRow("Motor nativo", "AOSP C++ libjni_latinime.so")
+                                    TalMetricRow("Permissão INTERNET", "AUSENTE (0)")
+                                    TalMetricRow("Dicionários S23", "PT-BR 169k · EN-US 129k")
+                                    TalMetricRow("Armazenamento local", "Apenas floats dx/dy")
+                                    TalMetricRow("Campos sensíveis", "Estático · zero gravação")
+                                }
+                            }
+                        }
+                    }
+
+                    // Fixed T.A.L. Signature Footer
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = GridInset),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(SegmentedInset)
+                    ) {
+                        Text(
+                            text = "Developed by Totally Accurate Labs.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "© 2026 Totally Accurate Labs · MADE BY T.A.L.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -523,14 +614,13 @@ private fun TalSectionCard(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(SegmentedInset)) {
         Text(
             text = title,
-            fontFamily = TalJetBrainsMono,
-            fontSize = 11.sp,
+            style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 4.dp)
+            modifier = Modifier.semantics { heading() }
         )
         Surface(
             color = MaterialTheme.colorScheme.surface,
@@ -549,17 +639,29 @@ private fun TalSettingRow(
     iconRes: Int,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+            .heightIn(min = TouchTargetMin)
+            .applePressScale(interactionSource)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            }
+            .padding(horizontal = GridInset, vertical = GridInset)
+            .semantics(mergeDescendants = true) {},
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 24 dp vector icon centered with 0 px offset inside 48 dp target (ui.md §6)
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .size(TouchTargetMin)
+                .clip(InnerPillShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
@@ -567,16 +669,17 @@ private fun TalSettingRow(
                 painter = painterResource(iconRes),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(24.dp)
             )
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(GridInset))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
                 fontFamily = TalSpaceGrotesk,
                 fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
+                fontSize = 18.sp,
+                lineHeight = 22.sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -584,15 +687,14 @@ private fun TalSettingRow(
             if (!subtitle.isNullOrBlank()) {
                 Text(
                     text = subtitle,
-                    fontFamily = TalInter,
-                    fontSize = 12.sp,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(GridInset))
         NextScreenIcon()
     }
 }
@@ -600,43 +702,79 @@ private fun TalSettingRow(
 @Composable
 private fun TalRowDivider() {
     HorizontalDivider(
-        modifier = Modifier.padding(horizontal = 14.dp),
+        modifier = Modifier.padding(horizontal = GridInset),
         color = MaterialTheme.colorScheme.outlineVariant
     )
 }
 
+/**
+ * Apple-style interruptible spring-sliding segmented control (48 dp target, 6 dp inner inset).
+ * Indicator slides smoothly via critical no-bounce spring (stiffness = 439) in graphicsLayer/offset.
+ */
 @Composable
-private fun TalSegmentedRow(
+private fun TalAppleSegmentedControl(
     labels: List<String>,
     selectedIndex: Int,
     onSelect: (Int) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    val count = labels.size.coerceAtLeast(1)
+    val animatedIndex by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = AppleCriticalSpring,
+        label = "segmentedIndicator"
+    )
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = CardShape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
-        labels.forEachIndexed { idx, label ->
-            val selected = idx == selectedIndex
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(TouchTargetMin)
+                .padding(SegmentedInset)
+        ) {
+            val segmentWidthPx = constraints.maxWidth.toFloat() / count
+            val segmentWidthDp = maxWidth / count
+
+            // Sliding physical pill indicator
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(42.dp)
-                    .clip(PillShape)
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant
-                    )
-                    .clickable { onSelect(idx) },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = label,
-                    fontFamily = TalJetBrainsMono,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurface
-                )
+                    .offset { IntOffset((animatedIndex * segmentWidthPx).roundToInt(), 0) }
+                    .width(segmentWidthDp)
+                    .fillMaxHeight()
+                    .clip(InnerPillShape)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                labels.forEachIndexed { idx, label ->
+                    val selected = idx == selectedIndex
+                    val interactionSource = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .applePressScale(interactionSource)
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null
+                            ) { onSelect(idx) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            fontFamily = TalJetBrainsMono,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimary
+                            else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
@@ -645,20 +783,20 @@ private fun TalSegmentedRow(
 @Composable
 private fun TalMetricRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {},
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = label,
-            fontFamily = TalInter,
-            fontSize = 13.sp,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
             text = value,
-            fontFamily = TalJetBrainsMono,
-            fontSize = 12.sp,
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurface
         )
     }
