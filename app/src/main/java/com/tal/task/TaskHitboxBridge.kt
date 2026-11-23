@@ -19,21 +19,21 @@ import java.text.Normalizer
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * T.A.S.K. v2.1.0 — Apple/iPhone-style 2D Bayesian Touch-Target Engine,
+ * T.A.S.K. v2.2.0 — Apple/iPhone-style Non-Overlapping Dynamic Tap Zones,
  * Ergonomic Thumb Vertical Parallax Compensation, Adaptive Per-Row Calibration,
- * and Real-Time Prediction Visualizer (OFF / PRED / ENG).
+ * and 1:1 WYSIWYG Prediction Visualizer (OFF / PRED / ENG).
  *
- * Guarantees (D7 / D8 / D10 / D11):
- * - 2D Gaussian spatial likelihood combined with offline S23 PT-BR/EN-US language prior.
- * - Ergonomic thumb vertical offset + per-row EMA calibration (stores ONLY float offsets, never text).
- * - Central 56% protected core is 100% inviolable (never hijacked even at 0% probability).
- * - Expansion capped at <= +40%.
- * - Automatically disabled (zero calibration writes, static hitboxes) in Password/URI/Email/Incognito fields.
+ * Key property:
+ * Adjacent keys share a single dynamic boundary that shifts proportionally to
+ * (boost_left - boost_right), clamped outside each key's 56% protected core.
+ * - ZERO overlap between tap zones (horizontally or vertically).
+ * - ZERO cumulative drift across the row (every key stays anchored on its visual label).
+ * - 100% WYSIWYG: the exact non-overlapping RectF drawn in PRED/ENG is the exact
+ *   hit zone used by resolveKey().
  */
 object TaskHitboxBridge {
 
@@ -49,10 +49,10 @@ object TaskHitboxBridge {
         }
     }
 
-    enum class Sensitivity(val label: String, val gamma: Float, val maxExpansion: Float) {
-        SOFT("Suave", gamma = 0.28f, maxExpansion = 0.24f),
-        STANDARD("Padrão", gamma = 0.45f, maxExpansion = 0.34f),
-        AGGRESSIVE("Agressivo", gamma = 0.60f, maxExpansion = 0.40f)
+    enum class Sensitivity(val label: String, val maxShiftRatio: Float, val maxVertShiftRatio: Float) {
+        SOFT("Suave", maxShiftRatio = 0.14f, maxVertShiftRatio = 0.08f),
+        STANDARD("Padrão", maxShiftRatio = 0.20f, maxVertShiftRatio = 0.12f),
+        AGGRESSIVE("Agressivo", maxShiftRatio = 0.24f, maxVertShiftRatio = 0.15f)
     }
 
     data class LiveTelemetry(
@@ -73,18 +73,21 @@ object TaskHitboxBridge {
         val visualizerMode: VisualizerMode
     )
 
+    private class TapZoneEntry(
+        val key: Key,
+        val charIdx: Int,
+        val row: Int,
+        val rect: RectF
+    )
+
     private const val PREFS_NAME = "task_hitbox_prefs"
     private const val KEY_VIZ_MODE = "viz_mode"
     private const val KEY_SENSITIVITY = "sensitivity"
     private const val KEY_ADAPTIVE = "adaptive_thumb"
     private const val KEY_SAMPLES = "cal_samples"
 
-    private const val HARD_MAX_EXPANSION = 0.40f
     private const val PROTECTED_CORE_RATIO = 0.56f
-    private const val SIGMA_X = 0.58f
-    private const val SIGMA_Y = 0.62f
-    private const val LAPLACE_EPS = 0.002f
-    private const val BASE_VERTICAL_BIAS_RATIO = 0.06f // iPhone thumb parallax: capacitive centroid sits ~6% below visual target
+    private const val BASE_VERTICAL_BIAS_RATIO = 0.06f
     private const val MAX_ADAPTIVE_BIAS_RATIO = 0.14f
     private const val EMA_ALPHA = 0.04f
 
@@ -202,9 +205,15 @@ object TaskHitboxBridge {
     private val rowBiasY = floatArrayOf(BASE_VERTICAL_BIAS_RATIO, BASE_VERTICAL_BIAS_RATIO, BASE_VERTICAL_BIAS_RATIO * 0.75f, 0f)
     @Volatile private var calibrationSamples = 0
 
-    // Live probabilities & expansion factors for 'a'..'z'
+    // Live probabilities & normalized boost [0..1] for 'a'..'z'
     private val charProbs = FloatArray(26)
-    private val charExpansions = FloatArray(26)
+    private val charBoosts = FloatArray(26)
+    @Volatile private var zoneGeneration = 0
+
+    // Cached non-overlapping tap zones for the current keyboard + generation
+    @Volatile private var cachedKeyboardRef: Keyboard? = null
+    @Volatile private var cachedZoneGen: Int = -1
+    @Volatile private var cachedZones: List<TapZoneEntry> = emptyList()
 
     // Telemetry state
     private val latencyRing = DoubleArray(100)
@@ -407,26 +416,132 @@ object TaskHitboxBridge {
         val model = if (activeLocaleIsPt) ptModel else enModel
         if (model == null || !dynamicAllowedForField) {
             charProbs.fill(0f)
-            charExpansions.fill(0f)
+            charBoosts.fill(0f)
+            zoneGeneration++
             return
         }
         model.nextCharProbabilities(currentPrefix, charProbs)
         var maxP = 0f
         for (i in 0 until 26) if (charProbs[i] > maxP) maxP = charProbs[i]
         if (maxP <= 0f) {
-            charExpansions.fill(0f)
+            charBoosts.fill(0f)
+            zoneGeneration++
             return
         }
-        val cap = sensitivity.maxExpansion.coerceAtMost(HARD_MAX_EXPANSION)
         for (i in 0 until 26) {
-            val norm = sqrt((charProbs[i] / maxP).coerceIn(0f, 1f))
-            charExpansions[i] = (norm * cap).coerceIn(0f, HARD_MAX_EXPANSION)
+            // Smooth square-root boost in [0..1] for crisp separation of likely next letters
+            charBoosts[i] = sqrt((charProbs[i] / maxP).coerceIn(0f, 1f))
         }
+        zoneGeneration++
     }
 
     /**
-     * Apple/iPhone-style 2D Bayesian Touch Resolution with Ergonomic Thumb Vertical Offset
-     * and D8 56% Protected Core Guarantee.
+     * Computes strictly NON-OVERLAPPING adaptive tap zones for all alphabetic keys on [keyboard].
+     *
+     * How it guarantees ZERO overlap (like Apple's Dynamic Tap Zones):
+     * 1. Keys are grouped into visual rows by Y-center and sorted left-to-right.
+     * 2. Between every adjacent pair (key[i], key[i+1]) in a row, the shared vertical boundary
+     *    shifts from the geometric midpoint by (boost[i] - boost[i+1]) * maxShiftX, strictly
+     *    clamped so it NEVER enters either key's central 56% protected core.
+     *    Then zone[i].right = boundary - gutter/2 and zone[i+1].left = boundary + gutter/2.
+     * 3. Vertically, each row's shared horizontal divider stays cleanly separated with gutter/2
+     *    so zones never climb over keys in the row above or below.
+     */
+    private fun getOrBuildTapZones(keyboard: Keyboard): List<TapZoneEntry> {
+        val gen = zoneGeneration
+        if (cachedKeyboardRef === keyboard && cachedZoneGen == gen) {
+            return cachedZones
+        }
+
+        val alphaKeys = ArrayList<Key>(26)
+        for (k in keyboard.sortedKeys) {
+            if (toAlphaChar(k.code) != null) alphaKeys.add(k)
+        }
+        if (alphaKeys.isEmpty()) {
+            cachedKeyboardRef = keyboard
+            cachedZoneGen = gen
+            cachedZones = emptyList()
+            return emptyList()
+        }
+
+        // Group alphabetic keys into visual rows (tolerance = 35% of first key height)
+        val rowTolerance = (alphaKeys[0].hitBox.height() * 0.35f).coerceAtLeast(10f)
+        val rows = ArrayList<MutableList<Key>>(4)
+        for (k in alphaKeys) {
+            val cy = k.hitBox.exactCenterY()
+            val existing = rows.firstOrNull { abs(it[0].hitBox.exactCenterY() - cy) <= rowTolerance }
+            if (existing != null) existing.add(k) else rows.add(mutableListOf(k))
+        }
+        rows.sortBy { it[0].hitBox.exactCenterY() }
+
+        val maxShiftRatio = sensitivity.maxShiftRatio
+        val gutter = 3f // 3 px crisp gap between non-overlapping tap zones
+        val halfGutter = gutter * 0.5f
+        val result = ArrayList<TapZoneEntry>(alphaKeys.size)
+
+        for (rowIdx in rows.indices) {
+            val rowKeys = rows[rowIdx]
+            rowKeys.sortBy { it.hitBox.left }
+            val n = rowKeys.size
+            if (n == 0) continue
+
+            // Compute shared non-overlapping vertical boundaries between adjacent keys in this row
+            val boundaries = FloatArray(n + 1)
+            boundaries[0] = rowKeys[0].hitBox.left.toFloat()
+            boundaries[n] = rowKeys[n - 1].hitBox.right.toFloat()
+
+            for (i in 0 until n - 1) {
+                val leftKey = rowKeys[i]
+                val rightKey = rowKeys[i + 1]
+                val lhb = leftKey.hitBox
+                val rhb = rightKey.hitBox
+                val midX = (lhb.right + rhb.left) * 0.5f
+
+                val lIdx = (toAlphaChar(leftKey.code)!! - 'a')
+                val rIdx = (toAlphaChar(rightKey.code)!! - 'a')
+                val avgW = (lhb.width() + rhb.width()) * 0.5f
+                val delta = (charBoosts[lIdx] - charBoosts[rIdx]) * (avgW * maxShiftRatio)
+
+                // Clamp strictly outside BOTH keys' 56% protected central cores (D8)
+                val minBound = lhb.exactCenterX() + lhb.width() * PROTECTED_CORE_RATIO * 0.5f + halfGutter
+                val maxBound = rhb.exactCenterX() - rhb.width() * PROTECTED_CORE_RATIO * 0.5f - halfGutter
+                boundaries[i + 1] = if (minBound <= maxBound) {
+                    (midX + delta).coerceIn(minBound, maxBound)
+                } else {
+                    midX
+                }
+            }
+
+            // Build strictly non-overlapping RectF for every key in this row
+            for (i in 0 until n) {
+                val k = rowKeys[i]
+                val hb = k.hitBox
+                val cIdx = (toAlphaChar(k.code)!! - 'a')
+                val left = if (i == 0) boundaries[0] + halfGutter else boundaries[i] + halfGutter
+                val right = if (i == n - 1) boundaries[n] - halfGutter else boundaries[i + 1] - halfGutter
+                val top = hb.top + halfGutter
+                val bottom = hb.bottom - halfGutter
+
+                result.add(
+                    TapZoneEntry(
+                        key = k,
+                        charIdx = cIdx,
+                        row = rowIdx.coerceIn(0, 3),
+                        rect = RectF(left, top, right.coerceAtLeast(left + 2f), bottom.coerceAtLeast(top + 2f))
+                    )
+                )
+            }
+        }
+
+        cachedKeyboardRef = keyboard
+        cachedZoneGen = gen
+        cachedZones = result
+        return result
+    }
+
+    /**
+     * 1:1 WYSIWYG Apple/iPhone-style Touch Resolution using the exact same non-overlapping
+     * adaptive Tap Zones rendered on screen, combined with ergonomic thumb parallax offset.
      */
     @JvmStatic
     fun resolveKey(
@@ -441,6 +556,9 @@ object TaskHitboxBridge {
         val geoChar = toAlphaChar(geometricKey.code) ?: return geometricKey
         val t0 = System.nanoTime()
 
+        val zones = getOrBuildTapZones(keyboard)
+        if (zones.isEmpty()) return geometricKey
+
         val hb = geometricKey.hitBox
         val keyW = hb.width().toFloat().coerceAtLeast(1f)
         val keyH = hb.height().toFloat().coerceAtLeast(1f)
@@ -449,97 +567,59 @@ object TaskHitboxBridge {
         // 1. Apply iPhone ergonomic thumb vertical parallax compensation + adaptive per-row bias
         val biasXRatio = if (adaptiveThumbEnabled) rowBiasX[row] else 0f
         val biasYRatio = if (adaptiveThumbEnabled) rowBiasY[row] else BASE_VERTICAL_BIAS_RATIO
-        val offsetXPx = biasXRatio * keyW
-        val offsetYPx = biasYRatio * keyH
-        val adjX = touchX - offsetXPx
-        val adjY = touchY - offsetYPx
-        lastOffsetYPx = -offsetYPx
+        val adjX = touchX - biasXRatio * keyW
+        val adjY = touchY - biasYRatio * keyH
+        lastOffsetYPx = -(biasYRatio * keyH)
 
-        // Re-check geometric key at ergonomically compensated coordinates
-        var effectiveGeoKey: Key = geometricKey
-        var effectiveGeoChar: Char = geoChar
-        if (!hb.contains(adjX.roundToInt(), adjY.roundToInt())) {
-            for (cand in keyboard.getNearestKeys(adjX.roundToInt(), adjY.roundToInt())) {
-                val cch = toAlphaChar(cand.code) ?: continue
-                if (cand.hitBox.contains(adjX.roundToInt(), adjY.roundToInt())) {
-                    effectiveGeoKey = cand
-                    effectiveGeoChar = cch
-                    break
+        // 2. Hit-test the exact non-overlapping dynamic tap zones
+        var matched: TapZoneEntry? = null
+        for (i in zones.indices) {
+            val z = zones[i]
+            if (z.rect.contains(adjX, adjY)) {
+                matched = z
+                break
+            }
+        }
+        // If touch landed inside the 3px gutter between zones, pick nearest zone boundary
+        if (matched == null) {
+            var bestDist = Float.MAX_VALUE
+            for (i in zones.indices) {
+                val z = zones[i]
+                val cx = adjX.coerceIn(z.rect.left, z.rect.right)
+                val cy = adjY.coerceIn(z.rect.top, z.rect.bottom)
+                val d = hypot(adjX - cx, adjY - cy)
+                if (d < bestDist) {
+                    bestDist = d
+                    matched = z
                 }
             }
         }
 
-        val effHb = effectiveGeoKey.hitBox
-        val cx = effHb.exactCenterX()
-        val cy = effHb.exactCenterY()
-        val halfCoreW = effHb.width() * PROTECTED_CORE_RATIO * 0.5f
-        val halfCoreH = effHb.height() * PROTECTED_CORE_RATIO * 0.5f
+        val resolvedEntry = matched ?: return geometricKey
+        val resolvedKey = resolvedEntry.key
+        val resolvedChar = ('a' + resolvedEntry.charIdx)
+        val rHb = resolvedKey.hitBox
+        val cx = rHb.exactCenterX()
+        val cy = rHb.exactCenterY()
 
-        // 2. D8 Protected Core Guarantee: central 56% of key is 100% inviolable
+        val halfCoreW = rHb.width() * PROTECTED_CORE_RATIO * 0.5f
+        val halfCoreH = rHb.height() * PROTECTED_CORE_RATIO * 0.5f
         val inCore = adjX >= (cx - halfCoreW) && adjX <= (cx + halfCoreW) &&
             adjY >= (cy - halfCoreH) && adjY <= (cy + halfCoreH)
 
-        if (inCore) {
-            updateAdaptiveCalibration(row, touchX - cx, touchY - cy, keyW, keyH)
-            val rescuedByOffset = effectiveGeoKey !== geometricKey
-            if (rescuedByOffset) rescuedCount++ else coreProtectedCount++
-            recordTouch(
-                touchX.toFloat(), touchY.toFloat(), adjX, adjY,
-                geoChar, effectiveGeoChar, cx, cy,
-                charProbs[effectiveGeoChar - 'a'],
-                rescued = rescuedByOffset,
-                protectedByCore = !rescuedByOffset,
-                latencyMs = (System.nanoTime() - t0) / 1_000_000.0
-            )
-            return effectiveGeoKey
-        }
+        val rescued = resolvedKey !== geometricKey
+        if (rescued) rescuedCount++ else if (inCore) coreProtectedCount++
 
-        // 3. Outside protected core: 2D Bayesian Gaussian log-posterior = log P(Touch|Key) + gamma * log P(Key|ctx)
-        val gamma = sensitivity.gamma
-        val maxRadius = keyW * 1.45f
-        var bestKey: Key = effectiveGeoKey
-        var bestChar: Char = effectiveGeoChar
-        var bestLogPosterior = Float.NEGATIVE_INFINITY
-
-        for (candidate in keyboard.getNearestKeys(adjX.roundToInt(), adjY.roundToInt())) {
-            val candChar = toAlphaChar(candidate.code) ?: continue
-            val chb = candidate.hitBox
-            val dx = adjX - chb.exactCenterX()
-            val dy = adjY - chb.exactCenterY()
-            if (hypot(dx, dy) > maxRadius) continue
-
-            val nx = dx / (SIGMA_X * chb.width().toFloat().coerceAtLeast(1f))
-            val ny = dy / (SIGMA_Y * chb.height().toFloat().coerceAtLeast(1f))
-            val logSpatial = -0.5f * (nx * nx + ny * ny)
-            val pLang = charProbs[candChar - 'a'].coerceAtLeast(0f) + LAPLACE_EPS
-            val logPosterior = logSpatial + gamma * ln(pLang)
-
-            if (logPosterior > bestLogPosterior) {
-                bestLogPosterior = logPosterior
-                bestKey = candidate
-                bestChar = candChar
-            }
-        }
-
-        val rescued = bestKey !== geometricKey
-        if (rescued) rescuedCount++
-        updateAdaptiveCalibration(
-            row,
-            touchX - bestKey.hitBox.exactCenterX(),
-            touchY - bestKey.hitBox.exactCenterY(),
-            keyW,
-            keyH
-        )
+        updateAdaptiveCalibration(resolvedEntry.row, touchX - cx, touchY - cy, keyW, keyH)
         recordTouch(
             touchX.toFloat(), touchY.toFloat(), adjX, adjY,
-            geoChar, bestChar,
-            bestKey.hitBox.exactCenterX(), bestKey.hitBox.exactCenterY(),
-            charProbs[bestChar - 'a'],
+            geoChar, resolvedChar, cx, cy,
+            charProbs[resolvedEntry.charIdx],
             rescued = rescued,
-            protectedByCore = false,
+            protectedByCore = !rescued && inCore,
             latencyMs = (System.nanoTime() - t0) / 1_000_000.0
         )
-        return bestKey
+        return resolvedKey
     }
 
     private fun estimateRow(keyboard: Keyboard, centerY: Float): Int {
@@ -551,7 +631,6 @@ object TaskHitboxBridge {
         if (!adaptiveThumbEnabled || !dynamicAllowedForField) return
         val normX = (errX / keyW).coerceIn(-0.4f, 0.4f)
         val normY = (errY / keyH).coerceIn(-0.4f, 0.4f)
-        // Only adapt on plausible near-key taps (ignore wild slips)
         if (abs(normX) > 0.35f || abs(normY) > 0.35f) return
 
         rowBiasX[row] = (rowBiasX[row] * (1f - EMA_ALPHA) + normX * EMA_ALPHA)
@@ -560,7 +639,6 @@ object TaskHitboxBridge {
             .coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
         calibrationSamples++
 
-        // Persist every 15 taps to avoid disk churn
         if (calibrationSamples % 15 == 0) {
             appContextRef?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()?.apply {
                 putInt(KEY_SAMPLES, calibrationSamples)
@@ -601,8 +679,9 @@ object TaskHitboxBridge {
     }
 
     /**
-     * Hook called at the end of AOSP KeyboardView.onDraw(Canvas).
-     * Draws Bayesian expanded hitboxes (PRED) + thumb parallax vector, core bounds, % & HUD (ENG).
+     * Draws the strictly NON-OVERLAPPING Dynamic Tap Zones (1:1 WYSIWYG with resolveKey).
+     * Wide probable zones glow in T.A.L. Accent (Ice #7EE3EA dark / Deep Teal #0D6C74 light),
+     * while narrowed neighboring zones shrink cleanly without ever overlapping.
      */
     @JvmStatic
     fun drawOverlay(canvas: Canvas, keyboard: Keyboard?, context: Context) {
@@ -610,11 +689,14 @@ object TaskHitboxBridge {
         val mode = visualizerMode
         if (mode == VisualizerMode.OFF || keyboard == null || !dynamicAllowedForField) return
 
+        val zones = getOrBuildTapZones(keyboard)
+        if (zones.isEmpty()) return
+
         val density = context.resources.displayMetrics.density
         if (!paintsInitialized) {
             paintsInitialized = true
             val mono = ResourcesCompat.getFont(context, R.font.jetbrains_mono) ?: Typeface.MONOSPACE
-            strokePaint.strokeWidth = 1.5f * density
+            strokePaint.strokeWidth = 1.4f * density
             corePaint.strokeWidth = 1f * density
             corePaint.pathEffect = DashPathEffect(floatArrayOf(3f * density, 3f * density), 0f)
             offsetVectorPaint.strokeWidth = 1.5f * density
@@ -631,45 +713,39 @@ object TaskHitboxBridge {
         val accentRgb = accentColor and 0x00FFFFFF
         val secondaryColor = if (isDark) 0xFF8C8C8C.toInt() else 0xFF6B6B6B.toInt()
         val secondaryRgb = secondaryColor and 0x00FFFFFF
+        val radius = 7f * density
 
-        val keys = keyboard.sortedKeys
-        for (i in keys.indices) {
-            val key = keys[i]
-            val ch = toAlphaChar(key.code) ?: continue
-            val idx = ch - 'a'
-            val exp = charExpansions[idx]
-            if (exp <= 0.03f) continue
+        for (i in zones.indices) {
+            val z = zones[i]
+            val boost = charBoosts[z.charIdx]
 
-            val hb = key.hitBox
-            val dx = hb.width() * exp * 0.45f
-            val dy = hb.height() * exp * 0.35f
-            tempRect.set(hb.left - dx, hb.top - dy, hb.right + dx, hb.bottom + dy)
-
-            val fillAlpha = (exp * 150f).roundToInt().coerceIn(16, 72)
-            val strokeAlpha = (exp * 460f).roundToInt().coerceIn(55, 225)
+            // Draw EVERY alphabetic key's partitioned non-overlapping tap zone so the user
+            // sees probable keys widen and adjacent improbable keys narrow side-by-side!
+            val fillAlpha = (18 + boost * 82f).roundToInt().coerceIn(16, 105)
+            val strokeAlpha = (48 + boost * 195f).roundToInt().coerceIn(45, 245)
             fillPaint.color = (fillAlpha shl 24) or accentRgb
             strokePaint.color = (strokeAlpha shl 24) or accentRgb
 
-            val radius = 8f * density
-            canvas.drawRoundRect(tempRect, radius, radius, fillPaint)
-            canvas.drawRoundRect(tempRect, radius, radius, strokePaint)
+            canvas.drawRoundRect(z.rect, radius, radius, fillPaint)
+            canvas.drawRoundRect(z.rect, radius, radius, strokePaint)
 
             if (mode == VisualizerMode.ENGINEERING) {
+                val hb = z.key.hitBox
                 val cw = hb.width() * PROTECTED_CORE_RATIO * 0.5f
                 val chH = hb.height() * PROTECTED_CORE_RATIO * 0.5f
                 tempRect.set(hb.exactCenterX() - cw, hb.exactCenterY() - chH, hb.exactCenterX() + cw, hb.exactCenterY() + chH)
-                corePaint.color = (0x66 shl 24) or secondaryRgb
+                corePaint.color = (0x55 shl 24) or secondaryRgb
                 canvas.drawRect(tempRect, corePaint)
 
-                val pct = (charProbs[idx] * 100f).roundToInt()
+                val pct = (charProbs[z.charIdx] * 100f).roundToInt()
                 if (pct >= 4) {
                     monoPaint.color = accentColor
-                    canvas.drawText("$pct%", hb.exactCenterX(), hb.top + 11f * density, monoPaint)
+                    canvas.drawText("$pct%", z.rect.centerX(), z.rect.top + 11f * density, monoPaint)
                 }
             }
         }
 
-        // Draw thumb parallax compensation vector (raw -> adjusted) & Bayesian rescue vector (fades after 1.6s)
+        // Draw thumb parallax compensation vector (raw -> adjusted) & rescue vector (fades after 1.6s)
         if (lastRawX >= 0f && (System.currentTimeMillis() - lastTouchTimeMs) < 1600L) {
             if (mode == VisualizerMode.ENGINEERING && lastAdjX >= 0f) {
                 offsetVectorPaint.color = secondaryColor
