@@ -156,9 +156,9 @@ private constructor(val themeId: Int, @JvmField val mStyleId: Int) {
                     hasBorders,
                     "#7EE3EA".toColorInt(), // Ice accent (13.4:1 on #080808)
                     "#080808".toColorInt(), // Absolute Black background
-                    "#141414".toColorInt(), // Dark Surface 1 keys
-                    "#1D1D1D".toColorInt(), // Dark Surface 2 functional keys
-                    "#141414".toColorInt(), // Spacebar
+                    "#1D1D1D".toColorInt(), // Dark Surface 2 elevated alpha keys (Apple Dark Mode hierarchy)
+                    "#141414".toColorInt(), // Dark Surface 1 recessed functional keys
+                    "#1D1D1D".toColorInt(), // Spacebar elevated with alpha block
                     "#F2F2F0".toColorInt(), // Precision White text
                     "#8C8C8C".toColorInt(), // Technical Gray dark hints
                     keyboardBackground = backgroundImage

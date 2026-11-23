@@ -112,6 +112,7 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
     }
 
     // toolbar views, drawables and setup
+    private val stripWrapper: ViewGroup = findViewById(R.id.suggestions_strip_wrapper)
     private val toolbar: ViewGroup = findViewById(R.id.toolbar)
     private val toolbarContainer: View = findViewById(R.id.toolbar_container)
     private val pinnedKeys: ViewGroup = findViewById(R.id.pinned_keys)
@@ -128,6 +129,9 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         LinearLayout.LayoutParams.MATCH_PARENT
     )
     private val taskVizPill: TextView
+    private val taskVizPillBg = GradientDrawable().apply {
+        cornerRadius = 6.dpToPx(resources).toFloat()
+    }
 
     init {
         val colors = Settings.getValues().mColors
@@ -169,24 +173,29 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
             if (pinnedKeyInToolbar != null && Settings.getValues().mQuickPinToolbarKeys)
                 pinnedKeyInToolbar.background = enabledToolKeyBackground
         }
-        // T.A.S.K. 1-tap Key Prediction Visualizer pill (OFF / PRED / ENG)
+        // T.A.S.K. 1-tap Key Prediction Visualizer pill (OFF / PRED / ENG, 12 sp T.A.L. floor, always accessible)
         taskVizPill = TextView(context).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = androidx.core.content.res.ResourcesCompat.getFont(context, R.font.jetbrains_mono) ?: android.graphics.Typeface.MONOSPACE
             gravity = android.view.Gravity.CENTER
-            val padH = 8.dpToPx(resources)
+            val padH = 10.dpToPx(resources)
             setPadding(padH, 0, padH, 0)
+            background = taskVizPillBg
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
-            )
+            ).apply {
+                val marginV = 5.dpToPx(resources)
+                val marginEnd = 6.dpToPx(resources)
+                setMargins(4.dpToPx(resources), marginV, marginEnd, marginV)
+            }
             setOnClickListener {
                 com.tal.task.TaskHitboxBridge.cycleVisualizerMode(context)
                 refreshTaskVizPill()
                 KeyboardSwitcher.getInstance().mainKeyboardView?.invalidate()
             }
         }
-        pinnedKeys.addView(taskVizPill)
+        stripWrapper.addView(taskVizPill)
         refreshTaskVizPill()
         toolbarContainer.doOnNextLayout {
             // set min with of the toolbar so the weight of the toolbar keys actually does something
@@ -533,10 +542,18 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         val colors = Settings.getValues().mColors
         taskVizPill.text = activeMode.label
         val active = activeMode != com.tal.task.TaskHitboxBridge.VisualizerMode.OFF
-        taskVizPill.setTextColor(
-            if (active) colors.get(ColorType.ACTION_KEY_BACKGROUND)
-            else colors.get(ColorType.TOOL_BAR_KEY)
-        )
+        val accent = colors.get(ColorType.ACTION_KEY_BACKGROUND)
+        val muted = colors.get(ColorType.TOOL_BAR_KEY)
+        val strokeW = 1.dpToPx(resources).coerceAtLeast(1)
+        if (active) {
+            taskVizPill.setTextColor(accent)
+            taskVizPillBg.setColor((0x22 shl 24) or (accent and 0x00FFFFFF))
+            taskVizPillBg.setStroke(strokeW, (0xAA shl 24) or (accent and 0x00FFFFFF))
+        } else {
+            taskVizPill.setTextColor(muted)
+            taskVizPillBg.setColor(Color.TRANSPARENT)
+            taskVizPillBg.setStroke(strokeW, (0x44 shl 24) or (muted and 0x00FFFFFF))
+        }
     }
 
     private fun updateKeys() {

@@ -935,6 +935,8 @@ public class LatinIME extends InputMethodService implements
     public void onWindowHidden() {
         super.onWindowHidden();
         Log.i(TAG, "onWindowHidden");
+        com.tal.task.TaskHitboxBridge.onWindowHidden();
+        mLastTaskSyncText = null;
         closeMainKeyboard();
         clearNavigationBarColor();
     }
@@ -1366,15 +1368,19 @@ public class LatinIME extends InputMethodService implements
         syncTaskHitboxContext(talPrefix);
     }
 
+    @Nullable private String mLastTaskSyncText = null;
+    @Nullable private String mLastTaskSyncLocale = null;
+
     private void syncTaskHitboxContext(@Nullable final String fallbackPrefix) {
         CharSequence before = null;
         try {
-            final InputConnection ic = getCurrentInputConnection();
-            if (ic != null) {
-                before = ic.getTextBeforeCursor(512, 0);
-            }
+            // Read from in-RAM RichInputConnection cache first (0 Binder IPC during normal typing)
+            before = mInputLogic.mConnection.getTextBeforeCursor(512, 0);
             if (before == null) {
-                before = mInputLogic.mConnection.getTextBeforeCursor(512, 0);
+                final InputConnection ic = getCurrentInputConnection();
+                if (ic != null) {
+                    before = ic.getTextBeforeCursor(512, 0);
+                }
             }
         } catch (final Throwable ignored) {
             before = null;
@@ -1382,12 +1388,19 @@ public class LatinIME extends InputMethodService implements
         if (before == null && fallbackPrefix != null) {
             before = fallbackPrefix;
         }
+        final String beforeStr = (before != null) ? before.toString() : "";
         final String talLocale = mRichImm.getCurrentSubtype().getLocale().toLanguageTag();
-        com.tal.task.TaskHitboxBridge.updateFullTextContext(this, before, talLocale);
+        if (!beforeStr.equals(mLastTaskSyncText) || !talLocale.equals(mLastTaskSyncLocale)) {
+            mLastTaskSyncText = beforeStr;
+            mLastTaskSyncLocale = talLocale;
+            com.tal.task.TaskHitboxBridge.updateFullTextContext(this, beforeStr, talLocale);
+        }
         final MainKeyboardView talKbView = mKeyboardSwitcher.getMainKeyboardView();
         if (talKbView != null) {
             com.tal.task.TaskHitboxBridge.attachKeyboardView(talKbView);
-            talKbView.invalidate();
+            if (com.tal.task.TaskHitboxBridge.isVisualizerActive(this)) {
+                talKbView.invalidate();
+            }
         }
         if (hasSuggestionStripView()) {
             mSuggestionStripView.refreshTaskVizPill();
@@ -1533,7 +1546,7 @@ public class LatinIME extends InputMethodService implements
             }
         }
         AudioAndHapticFeedbackManager feedbackManager = AudioAndHapticFeedbackManager.getInstance();
-        feedbackManager.performHapticFeedback(keyboardView, hapticEvent);
+        feedbackManager.performHapticFeedback(code, keyboardView, hapticEvent);
         feedbackManager.performAudioFeedback(code, hapticEvent);
     }
 
@@ -1653,6 +1666,7 @@ public class LatinIME extends InputMethodService implements
     @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
+        com.tal.task.TaskHitboxBridge.onTrimMemory(level);
         // deallocateMemory already always called on hiding (with a short delay)
         if (level > TRIM_MEMORY_BACKGROUND) {
             KeyboardLayoutSet.Companion.onSystemLocaleChanged(); // clears caches, nothing else

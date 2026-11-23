@@ -463,7 +463,7 @@ fun MainSettingsScreen(
                                 TalRowDivider()
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_about),
-                                    subtitle = "T.A.S.K. v2.4.0 · Totally Accurate Labs (GPL-3.0)",
+                                    subtitle = "T.A.S.K. v3.0.0 · Totally Accurate Labs (GPL-3.0)",
                                     iconRes = R.drawable.ic_settings_about,
                                     onClick = onClickAbout
                                 )
@@ -579,6 +579,7 @@ fun MainSettingsScreen(
                                     verticalArrangement = Arrangement.spacedBy(GridInset)
                                 ) {
                                     TalMetricRow("Motor nativo", "AOSP C++ libjni_latinime.so")
+                                    TalMetricRow("RAM Trie (Flat-Int)", "${telemetry.estimatedTrieRamKb} KB")
                                     TalMetricRow("Permissão INTERNET", "AUSENTE (0)")
                                     TalMetricRow("Dicionários S23", "PT-BR 169k · EN-US 129k")
                                     TalMetricRow("Armazenamento local", "Apenas floats dx/dy")

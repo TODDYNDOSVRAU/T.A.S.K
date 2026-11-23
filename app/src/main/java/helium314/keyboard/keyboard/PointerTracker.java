@@ -334,7 +334,13 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
                 sListener.onTextInput(key.getOutputText());
             } else if (code != KeyCode.NOT_SPECIFIED) {
                 if (mKeyboard.hasProximityCharsCorrection(code)) {
-                    sListener.onCodeInput(code, x, y, isKeyRepeat);
+                    int inputX = x;
+                    int inputY = y;
+                    if (com.tal.task.TaskHitboxBridge.wasLastTouchRescuedForKey(key)) {
+                        inputX = key.getHitBox().centerX();
+                        inputY = key.getHitBox().centerY();
+                    }
+                    sListener.onCodeInput(code, inputX, inputY, isKeyRepeat);
                 } else {
                     sListener.onCodeInput(code, Constants.NOT_A_COORDINATE, Constants.NOT_A_COORDINATE, isKeyRepeat);
                 }
@@ -954,9 +960,10 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
             // Touchpad mode
             mTouchpadHandler.enableTouchpadMove(x, y, sListener);
 
-            // Vertical movement
+            // Vertical movement (2D trackpad after 250 ms hold or active vertical swipe)
             int stepsY = dY / sPointerStep;
-            if (stepsY != 0 && abs(dX) < abs(dY) && !mInHorizontalSwipe) {
+            if (stepsY != 0 && abs(dX) < abs(dY) && !mInHorizontalSwipe
+                    && (mInVerticalSwipe || SystemClock.elapsedRealtime() - mStartTime >= 250L)) {
                 if (!mInVerticalSwipe) {
                     sTimerProxy.cancelKeyTimersOf(this);
                     mInVerticalSwipe = true;

@@ -9,6 +9,8 @@ package helium314.keyboard.keyboard.internal;
 import android.content.Context;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.Interpolator;
+import android.view.animation.PathInterpolator;
 
 import helium314.keyboard.keyboard.Key;
 import helium314.keyboard.latin.common.ColorType;
@@ -21,19 +23,19 @@ import java.util.ArrayDeque;
 import java.util.HashMap;
 
 /**
- * This class controls pop up key previews. This class decides:
- * - what kind of key previews should be shown.
- * - where key previews should be placed.
- * - how key previews should be shown and dismissed.
+ * T.A.S.K. Key Preview Choreographer with 120 Hz GPU micro-spring enter (0.92 -> 1.00 in 85 ms)
+ * and interruptible fade-out (65 ms) without re-layout churn.
  */
 public final class KeyPreviewChoreographer {
-    // Free {@link KeyPreviewView} pool that can be used for key preview.
-    private final ArrayDeque<KeyPreviewView> mFreeKeyPreviewViews = new ArrayDeque<>();
-    // Map from {@link Key} to {@link KeyPreviewView} that is currently being displayed as key
-    // preview.
-    private final HashMap<Key,KeyPreviewView> mShowingKeyPreviewViews = new HashMap<>();
+    private static final Interpolator ENTER_INTERPOLATOR = new PathInterpolator(0.2f, 0.8f, 0.2f, 1.0f);
+    private static final Interpolator EXIT_INTERPOLATOR = new PathInterpolator(0.2f, 0.0f, 0.2f, 1.0f);
+    private static final long ENTER_DURATION_MS = 85L;
+    private static final long EXIT_DURATION_MS = 65L;
 
+    private final ArrayDeque<KeyPreviewView> mFreeKeyPreviewViews = new ArrayDeque<>();
+    private final HashMap<Key, KeyPreviewView> mShowingKeyPreviewViews = new HashMap<>();
     private final KeyPreviewDrawParams mParams;
+    private int mDismissTokenSeq = 0;
 
     public KeyPreviewChoreographer(final KeyPreviewDrawParams params) {
         mParams = params;
@@ -42,10 +44,12 @@ public final class KeyPreviewChoreographer {
     public KeyPreviewView getKeyPreviewView(final Key key, final ViewGroup placerView) {
         KeyPreviewView keyPreviewView = mShowingKeyPreviewViews.remove(key);
         if (keyPreviewView != null) {
+            resetPreviewTransform(keyPreviewView);
             return keyPreviewView;
         }
         keyPreviewView = mFreeKeyPreviewViews.poll();
         if (keyPreviewView != null) {
+            resetPreviewTransform(keyPreviewView);
             return keyPreviewView;
         }
         final Context context = placerView.getContext();
@@ -53,6 +57,14 @@ public final class KeyPreviewChoreographer {
         keyPreviewView.setBackgroundResource(mParams.mPreviewBackgroundResId);
         placerView.addView(keyPreviewView, ViewLayoutUtils.newLayoutParam(placerView, 0, 0));
         return keyPreviewView;
+    }
+
+    private static void resetPreviewTransform(final KeyPreviewView view) {
+        view.animate().cancel();
+        view.setTag(null);
+        view.setAlpha(1.0f);
+        view.setScaleX(1.0f);
+        view.setScaleY(1.0f);
     }
 
     public boolean isShowingKeyPreview(final Key key) {
@@ -67,11 +79,27 @@ public final class KeyPreviewChoreographer {
         if (keyPreviewView == null) {
             return;
         }
-        // Dismiss preview
         mShowingKeyPreviewViews.remove(key);
-        keyPreviewView.setTag(null);
-        keyPreviewView.setVisibility(View.INVISIBLE);
-        mFreeKeyPreviewViews.add(keyPreviewView);
+        final Integer token = ++mDismissTokenSeq;
+        keyPreviewView.setTag(token);
+        keyPreviewView.animate().cancel();
+        keyPreviewView.animate()
+                .alpha(0.0f)
+                .scaleX(0.95f)
+                .scaleY(0.95f)
+                .setDuration(EXIT_DURATION_MS)
+                .setInterpolator(EXIT_INTERPOLATOR)
+                .withEndAction(() -> {
+                    if (token.equals(keyPreviewView.getTag())) {
+                        keyPreviewView.setTag(null);
+                        keyPreviewView.setVisibility(View.INVISIBLE);
+                        keyPreviewView.setAlpha(1.0f);
+                        keyPreviewView.setScaleX(1.0f);
+                        keyPreviewView.setScaleY(1.0f);
+                        mFreeKeyPreviewViews.add(keyPreviewView);
+                    }
+                })
+                .start();
     }
 
     public void placeAndShowKeyPreview(final Key key, final KeyboardIconsSet iconsSet,
@@ -91,9 +119,6 @@ public final class KeyPreviewChoreographer {
         int previewHeight = keyPreviewView.getMeasuredHeight();
         int keyDrawWidth = key.getDrawWidth();
         int originX = CoordinateUtils.x(originCoords);
-        // The key preview is horizontally aligned with the center of the visible part of the
-        // parent key. If it doesn't fit in this {@link KeyboardView}, it is moved inward to fit and
-        // the left/right background is used if such background is specified.
         int keyPreviewPosition;
         int previewX = key.getDrawX() - (previewWidth - keyDrawWidth) / 2 + originX;
         if (previewX < originX) {
@@ -110,8 +135,6 @@ public final class KeyPreviewChoreographer {
         Colors colors = Settings.getValues().mColors;
         colors.setBackground(keyPreviewView, ColorType.KEY_PREVIEW_BACKGROUND);
 
-        // The key preview is placed vertically above the top edge of the parent key with an
-        // arbitrary offset.
         int previewY = key.getY() - previewHeight + key.getHeight() - mParams.mPreviewOffset
                 + CoordinateUtils.y(originCoords);
 
@@ -121,8 +144,18 @@ public final class KeyPreviewChoreographer {
     }
 
     void showKeyPreview(final Key key, final KeyPreviewView keyPreviewView) {
+        keyPreviewView.animate().cancel();
+        keyPreviewView.setTag(null);
+        keyPreviewView.setAlpha(1.0f);
+        keyPreviewView.setScaleX(0.92f);
+        keyPreviewView.setScaleY(0.92f);
         keyPreviewView.setVisibility(View.VISIBLE);
         mShowingKeyPreviewViews.put(key, keyPreviewView);
+        keyPreviewView.animate()
+                .scaleX(1.0f)
+                .scaleY(1.0f)
+                .setDuration(ENTER_DURATION_MS)
+                .setInterpolator(ENTER_INTERPOLATOR)
+                .start();
     }
-
 }

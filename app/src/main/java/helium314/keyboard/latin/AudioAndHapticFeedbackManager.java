@@ -8,6 +8,8 @@ package helium314.keyboard.latin;
 
 import android.content.Context;
 import android.media.AudioManager;
+import android.os.Build;
+import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
@@ -18,14 +20,18 @@ import helium314.keyboard.latin.common.Constants;
 import helium314.keyboard.latin.settings.SettingsValues;
 
 /**
- * This class gathers audio feedback and haptic feedback functions.
- * <p>
- * It offers a consistent and simple interface that allows LatinIME to forget about the
- * complexity of settings and the like.
+ * T.A.S.K. Apple Taptic Engine-style Haptic & Audio Feedback Manager.
+ * Zero per-keypress allocation: pre-builds LRA VibrationEffect primitives at initInternal().
  */
 public final class AudioAndHapticFeedbackManager {
     private AudioManager mAudioManager;
     private Vibrator mVibrator;
+    private boolean mHasVibrator;
+
+    // Pre-allocated Taptic Engine VibrationEffects (B4.Q2)
+    private VibrationEffect mLetterTickEffect;
+    private VibrationEffect mFunctionalClickEffect;
+    private VibrationEffect mDetentTickEffect;
 
     private SettingsValues mSettingsValues;
     private boolean mSoundOn;
@@ -49,6 +55,52 @@ public final class AudioAndHapticFeedbackManager {
     private void initInternal(final Context context) {
         mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         mVibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+        mHasVibrator = mVibrator != null && mVibrator.hasVibrator();
+        buildTapticEffects();
+    }
+
+    private void buildTapticEffects() {
+        if (!mHasVibrator || mVibrator == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            final boolean supportsLowTick = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    && mVibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_LOW_TICK);
+            final boolean supportsTick = mVibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK);
+            final boolean supportsClick = mVibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK);
+
+            if (supportsLowTick) {
+                mLetterTickEffect = VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, 0.45f)
+                        .compose();
+                mDetentTickEffect = VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, 0.35f)
+                        .compose();
+            } else if (supportsTick) {
+                mLetterTickEffect = VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.45f)
+                        .compose();
+                mDetentTickEffect = VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.35f)
+                        .compose();
+            }
+            if (supportsClick) {
+                mFunctionalClickEffect = VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.65f)
+                        .compose();
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (mLetterTickEffect == null) {
+                mLetterTickEffect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK);
+            }
+            if (mDetentTickEffect == null) {
+                mDetentTickEffect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK);
+            }
+            if (mFunctionalClickEffect == null) {
+                mFunctionalClickEffect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK);
+            }
+        }
     }
 
     public void performHapticAndAudioFeedback(
@@ -56,19 +108,19 @@ public final class AudioAndHapticFeedbackManager {
         final View viewToPerformHapticFeedbackOn,
         final HapticEvent hapticEvent
     ) {
-        performHapticFeedback(viewToPerformHapticFeedbackOn, hapticEvent);
+        performHapticFeedback(code, viewToPerformHapticFeedbackOn, hapticEvent);
         performAudioFeedback(code, hapticEvent);
     }
 
     public boolean hasVibrator() {
-        return mVibrator != null && mVibrator.hasVibrator();
+        return mHasVibrator;
     }
 
     public void vibrate(final long milliseconds) {
-        if (mVibrator == null || milliseconds <= 0) {
+        if (!mHasVibrator || mVibrator == null || milliseconds <= 0) {
             return;
         }
-        mVibrator.vibrate(milliseconds);
+        mVibrator.vibrate(VibrationEffect.createOneShot(milliseconds, VibrationEffect.DEFAULT_AMPLITUDE));
     }
 
     private boolean reevaluateIfSoundIsOn() {
@@ -79,14 +131,7 @@ public final class AudioAndHapticFeedbackManager {
     }
 
     public void performAudioFeedback(final int code, final HapticEvent hapticEvent) {
-        // if mAudioManager is null, we can't play a sound anyway, so return
-        if (mAudioManager == null) {
-            return;
-        }
-        if (!mSoundOn) {
-            return;
-        }
-        if (hapticEvent != HapticEvent.KEY_PRESS) {
+        if (mAudioManager == null || !mSoundOn || hapticEvent != HapticEvent.KEY_PRESS) {
             return;
         }
         final int sound = switch (code) {
@@ -99,23 +144,55 @@ public final class AudioAndHapticFeedbackManager {
     }
 
     public void performHapticFeedback(final View viewToPerformHapticFeedbackOn, final HapticEvent hapticEvent) {
-        if (!mSettingsValues.mVibrateOn || (mDoNotDisturb && !mSettingsValues.mVibrateInDndMode)) {
+        performHapticFeedback(KeyCode.NOT_SPECIFIED, viewToPerformHapticFeedbackOn, hapticEvent);
+    }
+
+    public void performHapticFeedback(
+            final int code,
+            final View viewToPerformHapticFeedbackOn,
+            final HapticEvent hapticEvent
+    ) {
+        if (mSettingsValues == null || !mSettingsValues.mVibrateOn
+                || (mDoNotDisturb && !mSettingsValues.mVibrateInDndMode)) {
             return;
         }
         if (hapticEvent == HapticEvent.NO_HAPTICS) {
-            // Avoid surprises with the handling of HapticFeedbackConstants.NO_HAPTICS
             return;
         }
         if (hapticEvent.allowCustomDuration && mSettingsValues.mKeypressVibrationDuration >= 0) {
             vibrate(mSettingsValues.mKeypressVibrationDuration);
             return;
         }
-        // Go ahead with the system default
+        if (mHasVibrator && mVibrator != null) {
+            final VibrationEffect effect;
+            if (hapticEvent == HapticEvent.GESTURE_MOVE
+                    || hapticEvent == HapticEvent.KEY_LONG_PRESS
+                    || hapticEvent == HapticEvent.KEY_REPEAT) {
+                effect = mDetentTickEffect;
+            } else if (isFunctionalKey(code)) {
+                effect = mFunctionalClickEffect;
+            } else {
+                effect = mLetterTickEffect;
+            }
+            if (effect != null) {
+                mVibrator.vibrate(effect);
+                return;
+            }
+        }
         if (viewToPerformHapticFeedbackOn != null) {
             viewToPerformHapticFeedbackOn.performHapticFeedback(
                     hapticEvent.feedbackConstant,
                     HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
         }
+    }
+
+    private static boolean isFunctionalKey(final int code) {
+        return code == Constants.CODE_SPACE
+                || code == Constants.CODE_ENTER
+                || code == KeyCode.DELETE
+                || code == KeyCode.SHIFT
+                || code == KeyCode.SYMBOL_ALPHA
+                || code == KeyCode.EMOJI;
     }
 
     public void onSettingsChanged(final SettingsValues settingsValues) {

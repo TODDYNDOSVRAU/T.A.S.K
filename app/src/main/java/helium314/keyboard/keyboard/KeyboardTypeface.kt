@@ -6,6 +6,8 @@ import android.content.Context
 import android.graphics.Typeface
 import android.widget.TextView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.core.content.res.ResourcesCompat
+import helium314.keyboard.latin.R
 import helium314.keyboard.latin.common.isEmoji
 import helium314.keyboard.latin.settings.Settings
 
@@ -23,7 +25,11 @@ object KeyboardTypeface {
 
     private fun loadCustomTypeface(context: Context): Typeface? {
         return runCatching {
-            Typeface.createFromFile(Settings.getCustomFontFile(context))
+            val file = Settings.getCustomFontFile(context)
+            if (file.exists()) Typeface.createFromFile(file)
+            else ResourcesCompat.getFont(context, R.font.inter)
+        }.getOrNull() ?: runCatching {
+            ResourcesCompat.getFont(context, R.font.inter)
         }.getOrNull()
     }
 
