@@ -1,0 +1,2 @@
+-keep class com.tal.task.ime.TaskInputMethodService { *; }
+-keep class com.tal.task.engine.** { *; }

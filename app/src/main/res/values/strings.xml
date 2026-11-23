@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">T.A.S.K.</string>
+    <string name="ime_name">T.A.S.K. Keyboard</string>
+    <string name="subtype_pt_br">Português (Brasil)</string>
+    <string name="subtype_en_us">English (US)</string>
+</resources>
