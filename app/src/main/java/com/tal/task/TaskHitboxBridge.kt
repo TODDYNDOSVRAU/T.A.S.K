@@ -819,6 +819,77 @@ object TaskHitboxBridge {
         editor.apply()
     }
 
+    data class CalibrationSnapshot(
+        val biasX: FloatArray,
+        val biasY: FloatArray,
+        val samples: Int,
+        val keyMeanDx: FloatArray,
+        val keyMeanDy: FloatArray,
+        val keyGrowLeft: FloatArray,
+        val keyGrowRight: FloatArray,
+        val keyGrowTop: FloatArray,
+        val keyGrowBottom: FloatArray,
+        val keySamples: IntArray,
+        val keyConfusion: FloatArray,
+        val learnedCorrectionPairs: Int,
+        val blockedAutocorrectReverts: Int,
+        val revertShieldCounts: Map<Long, Int>
+    )
+
+    @JvmStatic
+    fun captureCalibrationSnapshot(): CalibrationSnapshot {
+        synchronized(stateLock) {
+            return CalibrationSnapshot(
+                biasX = rowBiasX.copyOf(),
+                biasY = rowBiasY.copyOf(),
+                samples = calibrationSamples,
+                keyMeanDx = keyMeanDx.copyOf(),
+                keyMeanDy = keyMeanDy.copyOf(),
+                keyGrowLeft = keyGrowLeft.copyOf(),
+                keyGrowRight = keyGrowRight.copyOf(),
+                keyGrowTop = keyGrowTop.copyOf(),
+                keyGrowBottom = keyGrowBottom.copyOf(),
+                keySamples = keySamples.copyOf(),
+                keyConfusion = keyConfusion.copyOf(),
+                learnedCorrectionPairs = learnedCorrectionPairs,
+                blockedAutocorrectReverts = blockedAutocorrectReverts,
+                revertShieldCounts = HashMap(revertShieldCounts)
+            )
+        }
+    }
+
+    @JvmStatic
+    fun restoreCalibrationSnapshot(context: Context, snapshot: CalibrationSnapshot) {
+        ensureInitialized(context)
+        synchronized(stateLock) {
+            for (r in 0 until minOf(4, snapshot.biasX.size, snapshot.biasY.size)) {
+                rowBiasX[r] = snapshot.biasX[r].coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+                rowBiasY[r] = snapshot.biasY[r].coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+            }
+            for (k in 0 until minOf(26, snapshot.keyMeanDx.size)) {
+                keyMeanDx[k] = snapshot.keyMeanDx[k].coerceIn(-MAX_KEY_DX, MAX_KEY_DX)
+                keyMeanDy[k] = snapshot.keyMeanDy[k].coerceIn(-MAX_KEY_DY, MAX_KEY_DY)
+                keyGrowLeft[k] = snapshot.keyGrowLeft[k].coerceIn(0f, MAX_KEY_GROW_X)
+                keyGrowRight[k] = snapshot.keyGrowRight[k].coerceIn(0f, MAX_KEY_GROW_X)
+                keyGrowTop[k] = snapshot.keyGrowTop[k].coerceIn(0f, MAX_KEY_GROW_Y)
+                keyGrowBottom[k] = snapshot.keyGrowBottom[k].coerceIn(0f, MAX_KEY_GROW_Y)
+                keySamples[k] = snapshot.keySamples[k].coerceAtLeast(0)
+            }
+            val confCount = minOf(keyConfusion.size, snapshot.keyConfusion.size)
+            for (i in 0 until confCount) {
+                keyConfusion[i] = snapshot.keyConfusion[i].coerceIn(0f, 20f)
+            }
+            revertShieldCounts.clear()
+            revertShieldCounts.putAll(snapshot.revertShieldCounts)
+            calibrationSamples = snapshot.samples.coerceAtLeast(0)
+            learnedCorrectionPairs = snapshot.learnedCorrectionPairs.coerceAtLeast(0)
+            blockedAutocorrectReverts = snapshot.blockedAutocorrectReverts.coerceAtLeast(0)
+            learningDirty = true
+            zoneGeneration++
+        }
+        persistLearningProfileAsync(context)
+    }
+
     @JvmStatic
     fun restoreThumbCalibration(context: Context, biasX: FloatArray, biasY: FloatArray, samples: Int) {
         ensureInitialized(context)

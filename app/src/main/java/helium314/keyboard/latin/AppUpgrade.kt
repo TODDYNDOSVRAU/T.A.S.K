@@ -95,6 +95,13 @@ private object AppUpgrade {
                     file.delete()
             }
         }
+        if (oldVersion < 1000) {
+            // T.A.S.K. versions (versionCode 300+) must not run legacy upstream 1000..4201 migrations.
+            upgradeToolbarPrefs(prefs)
+            LayoutUtilsCustom.onLayoutFileChanged()
+            prefs.edit { putInt(Settings.PREF_VERSION_CODE, BuildConfig.VERSION_CODE) }
+            return
+        }
         if (oldVersion <= 1000) { // upgrade old custom layouts name
             val oldShiftSymbolsFile = getCustomLayoutFile("custom.shift_symbols", context)
             if (oldShiftSymbolsFile.exists()) {

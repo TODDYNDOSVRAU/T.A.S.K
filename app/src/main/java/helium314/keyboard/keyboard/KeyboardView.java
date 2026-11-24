@@ -659,8 +659,12 @@ public class KeyboardView extends View {
                 paint.setTextAlign(Align.CENTER);
             } else if (taskCap && !isFunctionalKeyAndRoundedStyle) {
                 final float density = getResources().getDisplayMetrics().density;
-                hintX = keyWidth - 4f * density;
-                hintBaseline = 3f * density - paint.ascent();
+                final float minHintPx = 10.5f * density;
+                if (paint.getTextSize() < minHintPx) {
+                    paint.setTextSize(minHintPx);
+                }
+                hintX = keyWidth - 5f * density;
+                hintBaseline = 4f * density - paint.ascent();
                 paint.setTextAlign(Align.RIGHT);
             } else { // key.hasHintLetter()
                 // The hint letter is placed at top-right corner of the key. Used mainly on phone.

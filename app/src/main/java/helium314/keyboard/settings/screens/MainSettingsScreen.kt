@@ -220,7 +220,6 @@ fun MainSettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .imePadding()
                 .padding(innerPadding)
         ) {
             // Editorial Header on 24 dp outer margin, 12 dp vertical rhythm
@@ -342,49 +341,49 @@ fun MainSettingsScreen(
                             // 2. Gboard-aligned Core Categories
                             TalSectionCard(title = "CONFIGURAÇÕES DO TECLADO") {
                                 TalSettingRow(
-                                    title = stringResource(R.string.language_and_layouts_title),
+                                    title = "Idiomas e layouts",
                                     subtitle = enabledSubtypes.joinToString(", ") { it.displayName() },
                                     iconRes = R.drawable.ic_settings_languages,
                                     onClick = onClickLanguage
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_preferences),
+                                    title = "Preferências",
                                     subtitle = "Som discreto · vibração de precisão · altura ${"%.2f".format(keyboardHeightScale)}x",
                                     iconRes = R.drawable.ic_settings_preferences,
                                     onClick = onClickPreferences
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_appearance),
+                                    title = "Aparência",
                                     subtitle = "Temas OLED, Esmeralda, Claro e bordas das teclas",
                                     iconRes = R.drawable.ic_settings_appearance,
                                     onClick = onClickAppearance
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_correction),
+                                    title = "Correção de texto",
                                     subtitle = "Autocorreção adaptativa, sugestões e escudo de reversão",
                                     iconRes = R.drawable.ic_settings_correction,
                                     onClick = onClickTextCorrection
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_gesture),
+                                    title = "Digitação por deslize",
                                     subtitle = "Digitação por deslize offline (T.A.S.K. Glide)",
                                     iconRes = R.drawable.ic_settings_gesture,
                                     onClick = onClickGestureTyping
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.settings_screen_toolbar),
+                                    title = "Barra de ferramentas",
                                     subtitle = "Microfone fixado · Clipboard · Editor DPAD · Flutuante",
                                     iconRes = R.drawable.ic_settings_toolbar,
                                     onClick = onClickToolbar
                                 )
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = stringResource(R.string.dictionary_settings_category),
+                                    title = "Dicionário",
                                     subtitle = "PT-BR (169k) · EN-US (129k) offline e dicionário pessoal",
                                     iconRes = R.drawable.ic_dictionary,
                                     onClick = onClickDictionaries
@@ -466,9 +465,9 @@ fun MainSettingsScreen(
                                 ) {
                                     val themeChoices = remember {
                                         listOf(
-                                            Triple("T.A.L. Escuro", KeyboardTheme.THEME_TAL_DARK, Color(0xFF0A4E52)),
+                                            Triple("Escuro", KeyboardTheme.THEME_TAL_DARK, Color(0xFF0A4E52)),
                                             Triple("Esmeralda", KeyboardTheme.THEME_TASK_EMERALD, Color(0xFF084D3D)),
-                                            Triple("T.A.L. Claro", KeyboardTheme.THEME_TAL_LIGHT, Color(0xFFD4EAEB)),
+                                            Triple("Claro", KeyboardTheme.THEME_TAL_LIGHT, Color(0xFFD4EAEB)),
                                             Triple("Dinâmico", KeyboardTheme.THEME_DYNAMIC, Color(0xFF7EE3EA))
                                         )
                                     }
@@ -533,7 +532,7 @@ fun MainSettingsScreen(
                                 }
                                 TalRowDivider()
                                 TalSettingRow(
-                                    title = "Personalizar cores e papel de parede",
+                                    title = "Cores e papel de parede",
                                     subtitle = "Estilos completos, imagem de fundo e espaçamento entre teclas",
                                     iconRes = R.drawable.ic_settings_appearance,
                                     onClick = onClickAppearance
@@ -757,9 +756,7 @@ fun MainSettingsScreen(
                                         OutlinedButton(
                                             onClick = {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                val prevX = telemetry.rowBiasX.copyOf()
-                                                val prevY = telemetry.rowBiasY.copyOf()
-                                                val prevSamples = telemetry.calibrationSamples
+                                                val snapshot = TaskHitboxBridge.captureCalibrationSnapshot()
                                                 TaskHitboxBridge.resetThumbCalibration(context)
                                                 refreshTick++
                                                 scope.launch {
@@ -769,7 +766,7 @@ fun MainSettingsScreen(
                                                         duration = SnackbarDuration.Short
                                                     )
                                                     if (res == SnackbarResult.ActionPerformed) {
-                                                        TaskHitboxBridge.restoreThumbCalibration(context, prevX, prevY, prevSamples)
+                                                        TaskHitboxBridge.restoreCalibrationSnapshot(context, snapshot)
                                                         refreshTick++
                                                     }
                                                 }
