@@ -683,7 +683,7 @@ private class CacheDictWithInfo(private val file: File): DictWithInfo {
 private class AssetsDictWithInfo(private val name: String, context: Context): DictWithInfo {
     override val internal = true
     override val locale = DictionaryInfoUtils.extractLocaleFromAssetsDictionaryFile(name)
-    override val hash = context.assets.open("dicts${File.separator}$name").use { ChecksumCalculator.checksum(it) } ?: ""
+    override val hash = context.assets.open("dicts/$name").use { ChecksumCalculator.checksum(it) } ?: ""
     override fun getDictionary(context: Context): BinaryDictionary {
         val file = DictionaryInfoUtils.extractAssetsDictionary(name, locale, context)!!
         return BinaryDictionary(file.absolutePath, 0, file.length(), false, locale, Dictionary.TYPE_MAIN, false)

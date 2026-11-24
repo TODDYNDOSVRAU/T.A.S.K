@@ -41,7 +41,8 @@ fun setToolbarButtonsActivatedStateOnPrefChange(buttonsGroup: ViewGroup, key: St
         && key != Settings.PREF_ALWAYS_INCOGNITO_MODE
         && key != GestureDataGatheringSettings.PREF_BACKGROUND_GATHERING_ENABLED
         && key != GestureDataGatheringSettings.PREF_BACKGROUND_DISABLED_BEFORE_TIME_MILLIS
-        && key?.startsWith(Settings.PREF_ONE_HANDED_MODE_PREFIX) == false)
+        && key?.startsWith(Settings.PREF_ONE_HANDED_MODE_PREFIX) == false
+        && key?.startsWith(Settings.PREF_FLOATING_ENABLED_PREFIX) == false)
         return
 
     GlobalScope.launch {
@@ -54,6 +55,7 @@ private fun setToolbarButtonActivatedState(button: ImageButton) {
     button.isActivated = when (button.tag) {
         INCOGNITO -> button.context.prefs().getBoolean(Settings.PREF_ALWAYS_INCOGNITO_MODE, Defaults.PREF_ALWAYS_INCOGNITO_MODE)
         ONE_HANDED -> Settings.getValues().mOneHandedModeEnabled
+        FLOATING -> Settings.getValues().mIsFloatingKeyboard
         SPLIT -> Settings.getValues().mIsSplitKeyboardEnabled
         AUTOCORRECT -> Settings.getValues().mAutoCorrectionEnabledPerUserSettings
         BACKGROUND_GATHERING -> useBackgroundGathering
@@ -131,7 +133,7 @@ enum class ToolbarMode {
 val toolbarKeyStrings = entries.associateWithTo(EnumMap(ToolbarKey::class.java)) { it.toString().lowercase(Locale.US) }
 
 val defaultToolbarPref by lazy {
-    val default = listOf(SETTINGS, VOICE, CLIPBOARD, UNDO, REDO, ONE_HANDED, SELECT_WORD, COPY, PASTE, LEFT, RIGHT)
+    val default = listOf(EMOJI, CLIPBOARD, DPAD, FLOATING, ONE_HANDED, VOICE, UNDO, REDO, SETTINGS, SELECT_WORD, COPY, PASTE, LEFT, RIGHT)
     val others = entries.filterNot { it in default || it == CLOSE_HISTORY }
     default.joinToString(Separators.ENTRY) { it.name + Separators.KV + true } + Separators.ENTRY +
             others.joinToString(Separators.ENTRY) { it.name + Separators.KV + false }

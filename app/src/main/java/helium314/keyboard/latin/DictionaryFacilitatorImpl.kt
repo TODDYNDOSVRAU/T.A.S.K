@@ -61,6 +61,8 @@ import kotlin.time.Duration.Companion.seconds
  */
 class DictionaryFacilitatorImpl : DictionaryFacilitator {
     private var dictionaryGroups = listOf(DictionaryGroup())
+    @Volatile
+    private var appContext: Context? = null
 
     @Volatile
     private var mLatchForWaitingLoadingMainDictionaries = CountDownLatch(0)
@@ -129,6 +131,7 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
         dictNamePrefix: String,
         listener: DictionaryInitializationListener?
     ) {
+        appContext = context.applicationContext
         Log.i(TAG, "resetDictionaries, force reloading main dictionary: $forceReloadMainDictionary")
 
         val locales = getUsedLocales(newLocale, context)
@@ -503,6 +506,37 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
         composedData: ComposedData, ngramContext: NgramContext, keyboard: Keyboard,
         settingsValuesForSuggestion: SettingsValuesForSuggestion, sessionId: Int, inputStyle: InputStyle
     ): SuggestionResults {
+        if (composedData.mIsBatchMode && !helium314.keyboard.latin.utils.JniUtils.sHaveExternalGestureLib) {
+            val ctx = appContext ?: Settings.getCurrentContext()
+            if (ctx != null) {
+                val ip = composedData.mInputPointers
+                val specs = dictionaryGroups.map { group ->
+                    com.tal.task.TaskGlideDecoder.LanguageDecodeSpec(
+                        locale = group.locale,
+                        weightForLocale = group.getWeightForLocale(dictionaryGroups, true),
+                        sourceDict = group.getDict(Dictionary.TYPE_MAIN) ?: Dictionary.DICTIONARY_USER_TYPED,
+                        isBlacklisted = { word -> isBlacklisted(word) }
+                    )
+                }
+                val prev1 = ngramContext.getNthPrevWord(1)?.toString()
+                val prev2 = ngramContext.getNthPrevWord(2)?.toString()
+                val glideResults = com.tal.task.TaskGlideDecoder.decode(
+                    context = ctx,
+                    xs = ip.xCoordinates,
+                    ys = ip.yCoordinates,
+                    pointerIds = ip.pointerIds,
+                    pointerSize = ip.pointerSize,
+                    keyboard = keyboard,
+                    specs = specs,
+                    prevWord1 = prev1,
+                    prevWord2 = prev2,
+                    isUpdating = (inputStyle == InputStyle.UPDATE_BATCH)
+                )
+                val outResults = SuggestionResults(SuggestedWords.MAX_SUGGESTIONS, ngramContext, false)
+                outResults.addAll(glideResults)
+                return outResults
+            }
+        }
         val proximityInfoHandle = keyboard.proximityInfo.nativeProximityInfo
         val weightOfLangModelVsSpatialModel = floatArrayOf(Dictionary.NOT_A_WEIGHT_OF_LANG_MODEL_VS_SPATIAL_MODEL)
 
@@ -646,20 +680,23 @@ class DictionaryFacilitatorImpl : DictionaryFacilitator {
         }
 
         private fun getUsedLocales(mainLocale: Locale, context: Context): Collection<Locale> {
-            val locales = hashSetOf(mainLocale)
+            val configured = mutableListOf<Locale>()
             // adding secondary locales is a bit tricky since they depend on the subtype
             // but usually this is called with the selected subtype locale
             val selectedSubtype = SubtypeSettings.getSelectedSubtype(context.prefs())
             if (selectedSubtype.locale() == mainLocale) {
-                locales.addAll(getSecondaryLocales(selectedSubtype.extraValue))
+                configured.addAll(getSecondaryLocales(selectedSubtype.extraValue))
             } else {
                 // probably we're called from the spell checker when using a different app as keyboard
                 // so best bet is adding all secondary locales for matching main locale
                 SubtypeSettings.getEnabledSubtypes(false).forEach {
                     if (it.locale() == mainLocale)
-                        locales.addAll(getSecondaryLocales(it.extraValue))
+                        configured.addAll(getSecondaryLocales(it.extraValue))
                 }
             }
+            val locales = LinkedHashSet<Locale>(configured.size + 2)
+            locales.add(mainLocale)
+            locales.addAll(com.tal.task.TaskMultilingualHelper.resolveSecondaryLocales(context.prefs(), mainLocale, configured))
             return locales
         }
 

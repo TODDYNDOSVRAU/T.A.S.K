@@ -5,7 +5,7 @@
 - **Package:** `com.tal.task`
 - **Root:** `C:\dev\task`
 - **Repository:** `https://github.com/TODDYNDOSVRAU/T.A.S.K`
-- **Architecture (D1 updated, GPL-3.0):** Full AOSP LatinIME source tree (via HeliBoard, including native C++ `libjni_latinime.so` via NDK 29) + T.A.L. visual identity & T.A.R.K.A.S.-grade Compose Settings UI + Apple/iPhone-style 2D Bayesian dynamic hitbox & ergonomic thumb parallax engine.
+- **Architecture (D1 updated, GPL-3.0):** Full AOSP LatinIME source tree (via HeliBoard, including native C++ `libjni_latinime.so` via NDK 29) + T.A.L. visual identity & T.A.R.K.A.S.-grade Compose Settings UI + Apple/iPhone-style 2D non-overlapping Dynamic Tap Zones & ergonomic thumb parallax + clean-room offline Gboard-parity suite (`v3.1.0`: offline SHARK² Glide decoder, simultaneous PT-BR + EN-US typing, offline bilingual Emoji & Kaomoji search, Gboard smart toolbar with DPAD/Floating/Clipboard/One-Handed/Voice handoff, smart punctuation & offline next-word predictions).
 
 ## Locked Owner Decisions (D1–D12)
 - **D1 (Updated):** Full AOSP LatinIME codebase (GPL-3.0) with native C++ `libjni_latinime.so` (`arm64-v8a` + `armeabi-v7a`).
@@ -19,4 +19,4 @@
 - **D9:** T.A.R.K.A.S.-grade Compose Settings UI (`Solid + Frosted` clean finish, `16 dp` rounded cards with `1 dp` outline, `Space Grotesk` / `Inter` / `JetBrains Mono`, 3 T.A.L. layers `Essential / Advanced / Engineering`, live Playground).
 - **D10:** 2D Gaussian Bayesian touch decoder (`P(Touch|Key) × P(Key|ctx)`) + ergonomic thumb vertical parallax offset (`6%` base) + local per-row adaptive EMA calibration (stores ONLY floats `dx/dy`, never text).
 - **D11:** iPhone physical ergonomics: `1.06x` keyboard height, `1.35x` portrait bottom padding above gesture bar, `8 ms` dry Taptic-style haptic tick, and thumb compensation vector (`raw -> adjusted -> Bayesian key`) in `ENG` mode.
-- **D12:** Consolidated on `main` of `TODDYNDOSVRAU/T.A.S.K` and published as `v2.1.0` (`release.apk`).
+- **D12:** Consolidated on `main` of `TODDYNDOSVRAU/T.A.S.K` and evolved to `v3.1.0` (`release.apk`) with 100% offline Gboard-parity suite (`TaskGlideDecoder`, `TaskMultilingualHelper`, `TaskEmojiDictionary`, upgraded `TaskHitboxBridge`, Gboard toolbar defaults).

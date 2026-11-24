@@ -301,7 +301,8 @@ public class SettingsValues {
             mOneHandedModeScale = 1 - (1 - baseScale) * extraScale;
         } else
             mOneHandedModeScale = 1f;
-        mSecondaryLocales = SubtypeUtilsKt.getSecondaryLocales(selectedSubtype.getExtraValue());
+        mSecondaryLocales = com.tal.task.TaskMultilingualHelper.resolveSecondaryLocales(
+                prefs, mLocale, SubtypeUtilsKt.getSecondaryLocales(selectedSubtype.getExtraValue()));
         mShowMorePopupKeys = SubtypeUtilsKt.getMoreKeys(selectedSubtype, prefs,
             selectedSubtype.isAsciiCapable() ? Defaults.PREF_MORE_POPUP_KEYS : LocaleKeyboardInfos.POPUP_KEYS_NORMAL);
         mColors = KeyboardTheme.getColorsForCurrentTheme(context);

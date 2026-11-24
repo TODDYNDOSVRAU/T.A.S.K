@@ -26,6 +26,7 @@ import helium314.keyboard.latin.utils.prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /** Enrichment class for InputMethodManager to simplify interaction and add functionality. */
@@ -127,12 +128,22 @@ class RichInputMethodManager private constructor() {
     }
 
     fun switchToShortcutIme(inputMethodService: InputMethodService) = scope.launch {
-        val imiId = shortcuts.firstOrNull()?.imi?.id ?: return@launch
+        val shortcut = shortcuts.firstOrNull()
+        if (shortcut == null) {
+            withContext(Dispatchers.Main) {
+                helium314.keyboard.keyboard.KeyboardSwitcher.getInstance().showToast(
+                    "Nenhum ditado por voz ativo. Ative o Ditado por Voz do sistema em Configurações > Idioma e entrada.",
+                    false
+                )
+            }
+            return@launch
+        }
+        val imiId = shortcut.imi.id
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            inputMethodService.switchInputMethod(imiId, shortcuts.first().subtype)
+            inputMethodService.switchInputMethod(imiId, shortcut.subtype)
         } else {
             val token = inputMethodService.window.window?.attributes?.token ?: return@launch
-            @Suppress("Deprecation") imm.setInputMethodAndSubtype(token, imiId, shortcuts.first().subtype)
+            @Suppress("Deprecation") imm.setInputMethodAndSubtype(token, imiId, shortcut.subtype)
         }
     }
 

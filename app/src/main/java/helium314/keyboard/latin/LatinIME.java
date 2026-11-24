@@ -1307,6 +1307,7 @@ public class LatinIME extends InputMethodService implements
         mGestureConsumer.onImeSuggestionsProcessed(suggestedWords,
                 mInputLogic.getComposingStart(), mInputLogic.getComposingLength(),
                 mDictionaryFacilitator);
+        syncTaskHitboxContext(null);
     }
 
     // This method must run on the UI Thread.
@@ -1370,6 +1371,7 @@ public class LatinIME extends InputMethodService implements
 
     @Nullable private String mLastTaskSyncText = null;
     @Nullable private String mLastTaskSyncLocale = null;
+    private boolean mLastTaskSyncBilingual = true;
 
     private void syncTaskHitboxContext(@Nullable final String fallbackPrefix) {
         CharSequence before = null;
@@ -1390,10 +1392,16 @@ public class LatinIME extends InputMethodService implements
         }
         final String beforeStr = (before != null) ? before.toString() : "";
         final String talLocale = mRichImm.getCurrentSubtype().getLocale().toLanguageTag();
-        if (!beforeStr.equals(mLastTaskSyncText) || !talLocale.equals(mLastTaskSyncLocale)) {
+        final boolean bilingual = com.tal.task.TaskMultilingualHelper.isBilingualPtEnActive(
+                mRichImm.getCurrentSubtype().getLocale(),
+                mSettings.getCurrent().mSecondaryLocales);
+        if (!beforeStr.equals(mLastTaskSyncText)
+                || !talLocale.equals(mLastTaskSyncLocale)
+                || bilingual != mLastTaskSyncBilingual) {
             mLastTaskSyncText = beforeStr;
             mLastTaskSyncLocale = talLocale;
-            com.tal.task.TaskHitboxBridge.updateFullTextContext(this, beforeStr, talLocale);
+            mLastTaskSyncBilingual = bilingual;
+            com.tal.task.TaskHitboxBridge.updateFullTextContext(this, beforeStr, talLocale, bilingual);
         }
         final MainKeyboardView talKbView = mKeyboardSwitcher.getMainKeyboardView();
         if (talKbView != null) {
@@ -1667,6 +1675,7 @@ public class LatinIME extends InputMethodService implements
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
         com.tal.task.TaskHitboxBridge.onTrimMemory(level);
+        com.tal.task.TaskGlideDecoder.onTrimMemory(level);
         // deallocateMemory already always called on hiding (with a short delay)
         if (level > TRIM_MEMORY_BACKGROUND) {
             KeyboardLayoutSet.Companion.onSystemLocaleChanged(); // clears caches, nothing else

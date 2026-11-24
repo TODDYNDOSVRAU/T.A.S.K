@@ -40,6 +40,7 @@ public final class JniUtils {
     }
 
     public static boolean sHaveGestureLib = false;
+    public static boolean sHaveExternalGestureLib = false;
     static {
         // hardcoded default path, may not work on all phones
         @SuppressLint("SdCardPath") String filesDir = "/data/data/" + BuildConfig.APPLICATION_ID + "/files";
@@ -77,12 +78,14 @@ public final class JniUtils {
                     // try loading the library
                     System.load(userSuppliedLibrary.getAbsolutePath());
                     sHaveGestureLib = true; // this is an assumption, any way to actually check?
+                    sHaveExternalGestureLib = true;
                 } else {
                     // delete if checksum doesn't match
                     // this is bad if we can't get the application and the user has a different library than expected...
                     //noinspection ResultOfMethodCallIgnored
                     userSuppliedLibrary.delete();
                     sHaveGestureLib = false;
+                    sHaveExternalGestureLib = false;
                 }
             } catch (Throwable t) { // catch everything, maybe provided library simply doesn't work
                 if (!(t instanceof IllegalStateException) || !"SharedPreferences in credential encrypted storage are not available until after user is unlocked".equals(t.getMessage()))
@@ -96,14 +99,16 @@ public final class JniUtils {
             try {
                 System.loadLibrary(JNI_LIB_NAME_GOOGLE);
                 sHaveGestureLib = true;
+                sHaveExternalGestureLib = true;
             } catch (UnsatisfiedLinkError ul) {
                 Log.w(TAG, "Could not load system glide typing library " + JNI_LIB_NAME_GOOGLE + ": " + ul.getMessage());
             }
         }
         if (!sHaveGestureLib) {
-            // try loading built-in library
+            // try loading built-in library (T.A.S.K. provides built-in offline SHARK² glide decoder)
             try {
                 System.loadLibrary(JNI_LIB_NAME);
+                sHaveGestureLib = true;
             } catch (UnsatisfiedLinkError ul) {
                 Log.w(TAG, "Could not load native library " + JNI_LIB_NAME, ul);
             }

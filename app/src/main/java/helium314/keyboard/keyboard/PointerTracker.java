@@ -556,6 +556,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
     // Implements {@link BatchInputArbiterListener}.
     @Override
     public void onStartBatchInput() {
+        com.tal.task.TaskHitboxBridge.setInGesture(true);
         if (DEBUG_LISTENER) {
             Log.d(TAG, String.format(Locale.US, "[%d] onStartBatchInput", mPointerId));
         }
@@ -595,6 +596,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
     // Implements {@link BatchInputArbiterListener}.
     @Override
     public void onEndBatchInput(final InputPointers aggregatedPointers, final long eventTime) {
+        com.tal.task.TaskHitboxBridge.setInGesture(false);
         sTypingTimeRecorder.onEndBatchInput(eventTime);
         sTimerProxy.cancelAllUpdateBatchInputTimers();
         if (mIsTrackingForActionDisabled) {
@@ -610,6 +612,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
     private void cancelBatchInput() {
         cancelAllPointerTrackers();
         mIsDetectingGesture = false;
+        com.tal.task.TaskHitboxBridge.setInGesture(false);
         if (!sInGesture) {
             return;
         }

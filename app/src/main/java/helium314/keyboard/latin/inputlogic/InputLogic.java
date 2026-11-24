@@ -2686,7 +2686,7 @@ public final class InputLogic {
         var suggestedWordInfos = new ArrayList<SuggestedWordInfo>(suggestions.size() + 1);
         suggestedWordInfos.add(typedWordInfo);
         for (var suggestion: suggestions) {
-            if (suggestion.isEmoji()) {
+            if (suggestion.isEmoji() || Dictionary.TYPE_EMOJI.equals(suggestion.getSourceDict().mDictType)) {
                 Suggest.addDebugInfo(suggestion, input);
                 suggestedWordInfos.add(Suggest.useDefaultEmojiSkinTone(suggestion));
             }

@@ -16,6 +16,9 @@ import androidx.core.content.res.ResourcesCompat
 import helium314.keyboard.keyboard.Key
 import helium314.keyboard.keyboard.Keyboard
 import helium314.keyboard.latin.R
+import helium314.keyboard.latin.settings.Defaults
+import helium314.keyboard.latin.settings.Settings
+import helium314.keyboard.latin.utils.prefs
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.lang.ref.WeakReference
@@ -82,7 +85,11 @@ object TaskHitboxBridge {
         val contextWordCount: Int,
         val currentPrefix: String,
         val prevWord: String,
-        val estimatedTrieRamKb: Int
+        val estimatedTrieRamKb: Int,
+        val bilingualPtEn: Boolean,
+        val lastGlideWord: String,
+        val lastGlideLatencyMs: Double,
+        val totalGlides: Int
     )
 
     private const val PREFS_NAME = "task_hitbox_prefs"
@@ -118,6 +125,17 @@ object TaskHitboxBridge {
                 (edgeTarget.size.toLong() * 4L) +
                 (charBigrams.size.toLong() * 4L) +
                 (charTotals.size.toLong() * 4L)
+
+        fun prefixMass(prefixBuf: CharArray, prefixLen: Int): Int {
+            var node = 0
+            for (i in 0 until prefixLen) {
+                val chByte = (prefixBuf[i] - 'a').toByte()
+                val nextNode = findChild(node, chByte)
+                if (nextNode < 0) return 0
+                node = nextNode
+            }
+            return nodeMass[node]
+        }
 
         fun nextCharProbabilities(prefixBuf: CharArray, prefixLen: Int, out: FloatArray) {
             out.fill(0f)
@@ -323,7 +341,10 @@ object TaskHitboxBridge {
         "tem" to listOf("que" to 0.75f, "como" to 0.6f, "alguma" to 0.45f, "muita" to 0.4f),
         "pode" to listOf("deixar" to 0.75f, "ser" to 0.75f, "fazer" to 0.55f, "mandar" to 0.45f),
         "estou" to listOf("indo" to 0.7f, "aqui" to 0.65f, "bem" to 0.6f, "chegando" to 0.55f, "trabalhando" to 0.45f),
-        "ja" to listOf("esta" to 0.65f, "foi" to 0.6f, "vou" to 0.55f, "cheguei" to 0.5f)
+        "ja" to listOf("esta" to 0.65f, "foi" to 0.6f, "vou" to 0.55f, "cheguei" to 0.5f),
+        "vou" to listOf("ver" to 0.7f, "fazer" to 0.65f, "mandar" to 0.55f, "ir" to 0.5f),
+        "entao" to listOf("esta" to 0.65f, "vamos" to 0.6f, "pode" to 0.5f),
+        "como" to listOf("voce" to 0.75f, "esta" to 0.7f, "sempre" to 0.45f)
     )
 
     private val ptTrigrams: Map<String, List<Pair<String, Float>>> = mapOf(
@@ -338,7 +359,32 @@ object TaskHitboxBridge {
         "eu acho" to listOf("que" to 1.0f),
         "eu sei" to listOf("que" to 0.9f),
         "voce sabe" to listOf("que" to 0.85f, "se" to 0.6f, "como" to 0.5f),
-        "nao sei" to listOf("se" to 0.85f, "o" to 0.6f, "como" to 0.55f, "por" to 0.45f)
+        "nao sei" to listOf("se" to 0.85f, "o" to 0.6f, "como" to 0.55f, "por" to 0.45f),
+        "muito obrigado" to listOf("pelo" to 0.75f, "pela" to 0.7f, "por" to 0.6f),
+        "como voce" to listOf("esta" to 0.9f, "vai" to 0.6f),
+        "vai dar" to listOf("certo" to 0.9f, "tudo" to 0.6f)
+    )
+
+    private val ptAccentRestore: Map<String, String> = mapOf(
+        "nao" to "não",
+        "voce" to "você",
+        "esta" to "está",
+        "amanha" to "amanhã",
+        "tambem" to "também",
+        "ja" to "já",
+        "la" to "lá",
+        "ate" to "até",
+        "mae" to "mãe",
+        "sao" to "são",
+        "entao" to "então",
+        "so" to "só",
+        "ai" to "aí",
+        "cafe" to "café",
+        "irmao" to "irmão",
+        "coracao" to "coração",
+        "acao" to "ação",
+        "ninguem" to "ninguém",
+        "alguem" to "alguém"
     )
 
     private val enBigrams: Map<String, List<Pair<String, Float>>> = mapOf(
@@ -356,7 +402,9 @@ object TaskHitboxBridge {
         "you" to listOf("can" to 0.75f, "are" to 0.7f, "have" to 0.65f, "want" to 0.55f, "know" to 0.5f),
         "let" to listOf("me" to 0.85f, "us" to 0.6f),
         "see" to listOf("you" to 0.95f),
-        "have" to listOf("a" to 0.8f, "to" to 0.75f, "been" to 0.5f)
+        "have" to listOf("a" to 0.8f, "to" to 0.75f, "been" to 0.5f),
+        "sounds" to listOf("good" to 0.9f, "great" to 0.7f),
+        "on" to listOf("my" to 0.7f, "the" to 0.7f, "time" to 0.55f)
     )
 
     private val enTrigrams: Map<String, List<Pair<String, Float>>> = mapOf(
@@ -365,7 +413,9 @@ object TaskHitboxBridge {
         "good morning" to listOf("everyone" to 0.6f, "how" to 0.55f),
         "i think" to listOf("that" to 0.75f, "it" to 0.65f, "we" to 0.55f),
         "have a" to listOf("good" to 0.8f, "great" to 0.8f, "nice" to 0.6f),
-        "of course" to listOf("i" to 0.6f, "we" to 0.55f, "you" to 0.55f)
+        "of course" to listOf("i" to 0.6f, "we" to 0.55f, "you" to 0.55f),
+        "let me" to listOf("know" to 0.95f, "see" to 0.6f),
+        "on my" to listOf("way" to 0.95f, "phone" to 0.5f)
     )
 
     private val ptFeminineCues = setOf("a", "uma", "minha", "sua", "nossa", "essa", "esta", "aquela", "na", "da", "pela")
@@ -389,6 +439,8 @@ object TaskHitboxBridge {
     @Volatile private var sensitivity: Sensitivity = Sensitivity.STANDARD
     @Volatile private var adaptiveThumbEnabled: Boolean = true
     @Volatile private var activeLocaleIsPt = true
+    @Volatile private var bilingualPtEnActive = true
+    @Volatile private var inGestureStroke = false
 
     // Field policy flags
     @Volatile private var fieldBaseDynamicAllowed = true
@@ -418,6 +470,7 @@ object TaskHitboxBridge {
 
     // Probability fusion arrays (protected by stateLock)
     private val trieProbs = FloatArray(26)
+    private val enTrieProbs = FloatArray(26)
     private val contextBoosts = FloatArray(26)
     private val charProbs = FloatArray(26)
     private val charBoosts = FloatArray(26)
@@ -509,38 +562,47 @@ object TaskHitboxBridge {
     }
 
     private fun ensureActiveLanguageLoaded(appCtx: Context) {
-        if (activeLocaleIsPt) {
-            if (ptTrie == null && !loadingPt) {
-                loadingPt = true
-                loaderExecutor.execute {
-                    val loaded = FlatPrefixTrie.loadFromAsset(appCtx, "dict/pt_br.tsv")
-                    ptTrie = loaded
-                    loadingPt = false
-                    synchronized(stateLock) {
-                        recomputeProbabilitiesLocked()
-                    }
-                    if (visualizerMode != VisualizerMode.OFF) {
-                        attachedViewRef?.get()?.postInvalidate()
-                    }
+        val loadPt = activeLocaleIsPt || bilingualPtEnActive
+        val loadEn = !activeLocaleIsPt || bilingualPtEnActive
+        if (loadPt && ptTrie == null && !loadingPt) {
+            loadingPt = true
+            loaderExecutor.execute {
+                val loaded = FlatPrefixTrie.loadFromAsset(appCtx, "dict/pt_br.tsv")
+                ptTrie = loaded
+                loadingPt = false
+                synchronized(stateLock) {
+                    recomputeProbabilitiesLocked()
+                }
+                if (visualizerMode != VisualizerMode.OFF) {
+                    attachedViewRef?.get()?.postInvalidate()
                 }
             }
-        } else {
-            if (enTrie == null && !loadingEn) {
-                loadingEn = true
-                loaderExecutor.execute {
-                    val loaded = FlatPrefixTrie.loadFromAsset(appCtx, "dict/en_us.tsv")
-                    enTrie = loaded
-                    loadingEn = false
-                    synchronized(stateLock) {
-                        recomputeProbabilitiesLocked()
-                    }
-                    if (visualizerMode != VisualizerMode.OFF) {
-                        attachedViewRef?.get()?.postInvalidate()
-                    }
+        }
+        if (loadEn && enTrie == null && !loadingEn) {
+            loadingEn = true
+            loaderExecutor.execute {
+                val loaded = FlatPrefixTrie.loadFromAsset(appCtx, "dict/en_us.tsv")
+                enTrie = loaded
+                loadingEn = false
+                synchronized(stateLock) {
+                    recomputeProbabilitiesLocked()
+                }
+                if (visualizerMode != VisualizerMode.OFF) {
+                    attachedViewRef?.get()?.postInvalidate()
                 }
             }
         }
     }
+
+    @JvmStatic
+    fun setInGesture(active: Boolean) {
+        inGestureStroke = active
+    }
+
+    @JvmStatic
+    fun isBilingualPrefEnabled(context: Context): Boolean = runCatching {
+        context.prefs().getBoolean(Settings.PREF_MULTILINGUAL_PT_EN, Defaults.PREF_MULTILINGUAL_PT_EN)
+    }.getOrDefault(Defaults.PREF_MULTILINGUAL_PT_EN)
 
     @JvmStatic
     fun isVisualizerActive(context: Context): Boolean {
@@ -664,6 +726,7 @@ object TaskHitboxBridge {
      */
     @JvmStatic
     fun onWindowHidden() {
+        inGestureStroke = false
         synchronized(stateLock) {
             displayZonesPrimed = false
             lastDrawAnimUptimeMs = 0L
@@ -723,7 +786,11 @@ object TaskHitboxBridge {
                 contextWordCount = contextWordCount,
                 currentPrefix = currentPrefix,
                 prevWord = prevWord1,
-                estimatedTrieRamKb = ((trieBytes + 1023L) / 1024L).toInt()
+                estimatedTrieRamKb = ((trieBytes + 1023L) / 1024L).toInt(),
+                bilingualPtEn = bilingualPtEnActive,
+                lastGlideWord = TaskGlideDecoder.lastGlideWord,
+                lastGlideLatencyMs = TaskGlideDecoder.lastGlideLatencyMs,
+                totalGlides = TaskGlideDecoder.totalGlides
             )
         }
     }
@@ -731,6 +798,7 @@ object TaskHitboxBridge {
     @JvmStatic
     fun onFieldStarted(context: Context, editorInfo: EditorInfo?, localeTag: String?) {
         activeLocaleIsPt = localeTag == null || localeTag.lowercase().startsWith("pt")
+        bilingualPtEnActive = isBilingualPrefEnabled(context)
         ensureInitialized(context)
         applyEditorFieldPolicy(editorInfo)
         synchronized(stateLock) {
@@ -756,20 +824,32 @@ object TaskHitboxBridge {
         updateFullTextContext(context, prefix, localeTag)
     }
 
+    @JvmStatic
+    fun updateFullTextContext(context: Context, textBeforeCursor: CharSequence?, localeTag: String?) {
+        updateFullTextContext(context, textBeforeCursor, localeTag, isBilingualPrefEnabled(context))
+    }
+
     /**
      * Zero-Allocation hot-path context updater across all apps.
      * Uses incremental rolling-hash on text before prefix so typing characters inside a word
      * never re-tokenizes prior topic words.
      */
     @JvmStatic
-    fun updateFullTextContext(context: Context, textBeforeCursor: CharSequence?, localeTag: String?) {
+    fun updateFullTextContext(
+        context: Context,
+        textBeforeCursor: CharSequence?,
+        localeTag: String?,
+        bilingualPtEn: Boolean
+    ) {
         val nextIsPt = if (!localeTag.isNullOrBlank()) {
             localeTag.lowercase().startsWith("pt")
         } else {
             activeLocaleIsPt
         }
         val localeChanged = nextIsPt != activeLocaleIsPt
+        val bilingualChanged = bilingualPtEn != bilingualPtEnActive
         activeLocaleIsPt = nextIsPt
+        bilingualPtEnActive = bilingualPtEn
         ensureInitialized(context)
 
         val cs: CharSequence = textBeforeCursor ?: ""
@@ -888,7 +968,7 @@ object TaskHitboxBridge {
                 }
             }
 
-            if (beforeChanged || !prefixSame || prevDynamic != dynamicAllowedForField) {
+            if (beforeChanged || bilingualChanged || !prefixSame || prevDynamic != dynamicAllowedForField) {
                 recomputeProbabilitiesLocked()
             }
         }
@@ -910,16 +990,51 @@ object TaskHitboxBridge {
      * - Prefix 3+ chars AND low Trie entropy (<= 0.45): 85% lexicon, 15% context.
      */
     private fun recomputeProbabilitiesLocked() {
-        val trie = if (activeLocaleIsPt) ptTrie else enTrie
-        if (trie == null || !dynamicAllowedForField) {
+        val pt = ptTrie
+        val en = enTrie
+        val primaryTrie = if (activeLocaleIsPt) (pt ?: en) else (en ?: pt)
+        if (primaryTrie == null || !dynamicAllowedForField) {
             charProbs.fill(0f)
             charBoosts.fill(0f)
             zoneGeneration++
             return
         }
 
-        // 1. Base Flat-Int Trie probabilities
-        trie.nextCharProbabilities(foldedPrefixBuf, foldedPrefixLen, trieProbs)
+        val dualActive = bilingualPtEnActive && pt != null && en != null
+        var ptWeight = if (activeLocaleIsPt) 1f else 0f
+
+        if (dualActive) {
+            pt.nextCharProbabilities(foldedPrefixBuf, foldedPrefixLen, trieProbs)
+            en.nextCharProbabilities(foldedPrefixBuf, foldedPrefixLen, enTrieProbs)
+
+            ptWeight = if (activeLocaleIsPt) 0.70f else 0.30f
+            val ptCtxHit = (prevWord1.isNotEmpty() && prevWord1 in ptBigrams) ||
+                prevWord1 in ptFeminineCues || prevWord1 in ptMasculineCues
+            val enCtxHit = prevWord1.isNotEmpty() && prevWord1 in enBigrams
+            if (ptCtxHit && !enCtxHit) ptWeight += 0.15f
+            else if (enCtxHit && !ptCtxHit) ptWeight -= 0.15f
+
+            if (foldedPrefixLen > 0) {
+                val ptMass = pt.prefixMass(foldedPrefixBuf, foldedPrefixLen)
+                val enMass = en.prefixMass(foldedPrefixBuf, foldedPrefixLen)
+                if (ptMass > 0 && enMass == 0) {
+                    ptWeight = 0.85f
+                } else if (enMass > 0 && ptMass == 0) {
+                    ptWeight = 0.15f
+                } else if (ptMass + enMass > 0) {
+                    val massRatio = ptMass.toFloat() / (ptMass + enMass).toFloat()
+                    ptWeight = ptWeight * 0.5f + (0.15f + 0.70f * massRatio) * 0.5f
+                }
+            }
+            ptWeight = ptWeight.coerceIn(0.15f, 0.85f)
+            val enWeight = 1f - ptWeight
+            for (i in 0 until 26) {
+                trieProbs[i] = trieProbs[i] * ptWeight + enTrieProbs[i] * enWeight
+            }
+        } else {
+            primaryTrie.nextCharProbabilities(foldedPrefixBuf, foldedPrefixLen, trieProbs)
+        }
+        val enWeight = 1f - ptWeight
 
         // Compute normalized Shannon entropy H in [0..1]
         var entropy = 0f
@@ -947,50 +1062,76 @@ object TaskHitboxBridge {
 
         // 2. Context priors (built-in bigrams/trigrams, sentence starters, PT morpho, ephemeral topic)
         contextBoosts.fill(0f)
-        val bigramMap = if (activeLocaleIsPt) ptBigrams else enBigrams
-        val trigramMap = if (activeLocaleIsPt) ptTrigrams else enTrigrams
 
         if (prevWord2.isNotEmpty() && prevWord1.isNotEmpty()) {
             trigramKeyBuilder.setLength(0)
             trigramKeyBuilder.append(prevWord2).append(' ').append(prevWord1)
-            val triTargets = trigramMap[trigramKeyBuilder.toString()]
-            if (triTargets != null) {
-                for (i in triTargets.indices) {
-                    val pair = triTargets[i]
-                    boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.90f)
+            val triKey = trigramKeyBuilder.toString()
+            if (ptWeight > 0.01f) {
+                ptTrigrams[triKey]?.let { targets ->
+                    for (i in targets.indices) {
+                        val pair = targets[i]
+                        boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.90f * ptWeight)
+                    }
+                }
+            }
+            if (enWeight > 0.01f) {
+                enTrigrams[triKey]?.let { targets ->
+                    for (i in targets.indices) {
+                        val pair = targets[i]
+                        boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.90f * enWeight)
+                    }
                 }
             }
         }
         if (prevWord1.isNotEmpty()) {
-            val biTargets = bigramMap[prevWord1]
-            if (biTargets != null) {
-                for (i in biTargets.indices) {
-                    val pair = biTargets[i]
-                    boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.65f)
+            if (ptWeight > 0.01f) {
+                ptBigrams[prevWord1]?.let { targets ->
+                    for (i in targets.indices) {
+                        val pair = targets[i]
+                        boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.65f * ptWeight)
+                    }
+                }
+            }
+            if (enWeight > 0.01f) {
+                enBigrams[prevWord1]?.let { targets ->
+                    for (i in targets.indices) {
+                        val pair = targets[i]
+                        boostMatchingTargetChar(contextBoosts, pair.first, pair.second * 0.65f * enWeight)
+                    }
                 }
             }
         }
 
         if (isSentenceStart && foldedPrefixLen == 0) {
-            val starters = if (activeLocaleIsPt) ptSentenceStarters else enSentenceStarters
-            for (idx in starters.indices) {
-                val cIdx = starters[idx] - 'a'
-                if (cIdx in 0..25) {
-                    contextBoosts[cIdx] += 0.22f * (1f - idx * 0.06f)
+            if (ptWeight > 0.01f) {
+                for (idx in ptSentenceStarters.indices) {
+                    val cIdx = ptSentenceStarters[idx] - 'a'
+                    if (cIdx in 0..25) {
+                        contextBoosts[cIdx] += 0.22f * (1f - idx * 0.06f) * ptWeight
+                    }
+                }
+            }
+            if (enWeight > 0.01f) {
+                for (idx in enSentenceStarters.indices) {
+                    val cIdx = enSentenceStarters[idx] - 'a'
+                    if (cIdx in 0..25) {
+                        contextBoosts[cIdx] += 0.22f * (1f - idx * 0.06f) * enWeight
+                    }
                 }
             }
         }
 
-        if (activeLocaleIsPt && prevWord1.isNotEmpty() && foldedPrefixLen >= 2) {
+        if (ptWeight >= 0.35f && prevWord1.isNotEmpty() && foldedPrefixLen >= 2) {
             if (prevWord1 in ptFeminineCues) {
-                contextBoosts['a' - 'a'] += 0.14f
-                contextBoosts['s' - 'a'] += 0.05f
+                contextBoosts['a' - 'a'] += 0.14f * ptWeight
+                contextBoosts['s' - 'a'] += 0.05f * ptWeight
             } else if (prevWord1 in ptMasculineCues) {
-                contextBoosts['o' - 'a'] += 0.14f
-                contextBoosts['r' - 'a'] += 0.05f
+                contextBoosts['o' - 'a'] += 0.14f * ptWeight
+                contextBoosts['r' - 'a'] += 0.05f * ptWeight
             }
             if (prevWord1 in ptPluralCues && foldedPrefixLen >= 3) {
-                contextBoosts['s' - 'a'] += 0.18f
+                contextBoosts['s' - 'a'] += 0.18f * ptWeight
             }
         }
 
@@ -1044,6 +1185,151 @@ object TaskHitboxBridge {
             }
         }
         zoneGeneration++
+    }
+
+    private fun foldWordThreadSafe(text: String?): String {
+        if (text.isNullOrEmpty()) return ""
+        val limit = min(text.length, 64)
+        val buf = CharArray(limit)
+        var len = 0
+        for (i in 0 until limit) {
+            val fc = foldCharAscii(text[i])
+            if (fc != '\u0000') buf[len++] = fc
+        }
+        return if (len == 0) "" else String(buf, 0, len)
+    }
+
+    /**
+     * Shared context score [0f..1.5f] used by TaskGlideDecoder to boost swipe candidates that match
+     * the preceding 1-2 words and ephemeral topic history.
+     */
+    @JvmStatic
+    fun getWordContextBoost(
+        prevWord2: String?,
+        prevWord1: String?,
+        foldedWord: String,
+        isPt: Boolean
+    ): Float {
+        if (foldedWord.isEmpty()) return 0f
+        val p1 = foldWordThreadSafe(prevWord1)
+        val p2 = foldWordThreadSafe(prevWord2)
+        var boost = 0f
+
+        val triMap = if (isPt) ptTrigrams else enTrigrams
+        val biMap = if (isPt) ptBigrams else enBigrams
+
+        if (p2.isNotEmpty() && p1.isNotEmpty()) {
+            val triTargets = triMap["$p2 $p1"]
+            if (triTargets != null) {
+                for (i in triTargets.indices) {
+                    if (triTargets[i].first == foldedWord) {
+                        boost += triTargets[i].second * 0.90f
+                        break
+                    }
+                }
+            }
+        }
+        if (p1.isNotEmpty()) {
+            val biTargets = biMap[p1]
+            if (biTargets != null) {
+                for (i in biTargets.indices) {
+                    if (biTargets[i].first == foldedWord) {
+                        boost += biTargets[i].second * 0.65f
+                        break
+                    }
+                }
+            }
+        }
+
+        if (learningAllowedForField && dynamicAllowedForField) {
+            synchronized(stateLock) {
+                if (p1.isNotEmpty()) {
+                    val count = topicBigrams[p1]?.get(foldedWord) ?: 0
+                    if (count > 0) {
+                        boost += (0.45f + count * 0.15f).coerceAtMost(0.85f)
+                    }
+                }
+                val topicCount = topicWords[foldedWord] ?: 0
+                if (topicCount > 0) {
+                    boost += (0.15f + topicCount * 0.08f).coerceAtMost(0.45f)
+                }
+            }
+        }
+        return boost.coerceAtMost(1.5f)
+    }
+
+    /**
+     * Offline next-word predictions (up to 3) from trigrams -> bigrams -> ephemeral topic cache,
+     * with Portuguese accents restored on common words. Respects sensitive/no-learning fields.
+     */
+    @JvmStatic
+    fun getNextWordCandidates(
+        prevWord2: String?,
+        prevWord1: String?,
+        isPt: Boolean,
+        bilingual: Boolean
+    ): List<String> {
+        val p1 = foldWordThreadSafe(prevWord1)
+        val p2 = foldWordThreadSafe(prevWord2)
+        if (p1.isEmpty() && p2.isEmpty()) return emptyList()
+
+        val scored = ArrayList<Pair<String, Float>>(8)
+
+        fun collectFrom(list: List<Pair<String, Float>>?, scale: Float, restorePt: Boolean) {
+            if (list == null) return
+            for (i in list.indices) {
+                val raw = list[i].first
+                val display = if (restorePt) (ptAccentRestore[raw] ?: raw) else raw
+                val weight = list[i].second * scale
+                val existing = scored.indexOfFirst { it.first.equals(display, ignoreCase = true) }
+                if (existing >= 0) {
+                    if (weight > scored[existing].second) scored[existing] = display to weight
+                } else {
+                    scored.add(display to weight)
+                }
+            }
+        }
+
+        val tryPt = isPt || bilingual
+        val tryEn = !isPt || bilingual
+        val ptScale = if (isPt) 1.0f else 0.72f
+        val enScale = if (!isPt) 1.0f else 0.72f
+
+        if (p2.isNotEmpty() && p1.isNotEmpty()) {
+            val triKey = "$p2 $p1"
+            if (tryPt) collectFrom(ptTrigrams[triKey], 1.15f * ptScale, true)
+            if (tryEn) collectFrom(enTrigrams[triKey], 1.15f * enScale, false)
+        }
+        if (p1.isNotEmpty()) {
+            if (tryPt) collectFrom(ptBigrams[p1], 0.90f * ptScale, true)
+            if (tryEn) collectFrom(enBigrams[p1], 0.90f * enScale, false)
+        }
+
+        if (learningAllowedForField && dynamicAllowedForField && p1.isNotEmpty()) {
+            synchronized(stateLock) {
+                topicBigrams[p1]?.let { localMap ->
+                    for ((word, count) in localMap) {
+                        val display = if (isPt) (ptAccentRestore[word] ?: word) else word
+                        val w = (0.60f + count * 0.15f).coerceAtMost(1.05f)
+                        val existing = scored.indexOfFirst { it.first.equals(display, ignoreCase = true) }
+                        if (existing >= 0) {
+                            if (w > scored[existing].second) scored[existing] = display to w
+                        } else {
+                            scored.add(display to w)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (scored.isEmpty()) return emptyList()
+        scored.sortByDescending { it.second }
+        val limit = min(3, scored.size)
+        val result = ArrayList<String>(limit)
+        for (i in 0 until limit) {
+            result.add(scored[i].first)
+        }
+        return result
     }
 
     private fun boostMatchingTargetChar(out: FloatArray, targetWord: String, boostWeight: Float) {
@@ -1246,7 +1532,7 @@ object TaskHitboxBridge {
         touchY: Int,
         geometricKey: Key?
     ): Key? {
-        if (keyboard == null || geometricKey == null || !dynamicAllowedForField) {
+        if (keyboard == null || geometricKey == null || !dynamicAllowedForField || inGestureStroke) {
             return geometricKey
         }
         val geoChar = toAlphaChar(geometricKey.code) ?: return geometricKey

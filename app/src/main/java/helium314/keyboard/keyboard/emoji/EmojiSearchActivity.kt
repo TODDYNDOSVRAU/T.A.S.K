@@ -355,11 +355,14 @@ class EmojiSearchActivity : ComponentActivity() {
         keyboard.removeAllKeys()
         firstKey = null
         pressedKey = null
-        dictionaryFacilitator!!.getSuggestions(text.splitOnWhitespace()).filter { it.isEmoji }.forEach {
-            val emoji = getEmojiDefaultVersion(it.word)
-            val popupSpec = getEmojiPopupSpec(emoji)
-            val keyParams = Key.KeyParams(emoji, emoji.getCode(), if (popupSpec != null) EMOJI_HINT_LABEL else null, popupSpec,
-                Key.LABEL_FLAGS_FONT_NORMAL, keyboardParams)
+        dictionaryFacilitator!!.getSuggestions(text.splitOnWhitespace())
+            .filter { it.isEmoji || it.sourceDict.mDictType == Dictionary.TYPE_EMOJI }
+            .forEach {
+                val emoji = getEmojiDefaultVersion(it.word)
+                val popupSpec = getEmojiPopupSpec(emoji)
+                val baseFlags = if (it.isEmoji) Key.LABEL_FLAGS_FONT_NORMAL else (Key.LABEL_FLAGS_FONT_NORMAL or Key.LABEL_FLAGS_AUTO_SCALE)
+                val keyParams = Key.KeyParams(emoji, emoji.getCode(), if (popupSpec != null) EMOJI_HINT_LABEL else null, popupSpec,
+                    baseFlags, keyboardParams)
             keyParams.mAbsoluteWidth = keyWidth
             keyParams.mAbsoluteHeight = keyHeight
             val key = keyParams.createKey()

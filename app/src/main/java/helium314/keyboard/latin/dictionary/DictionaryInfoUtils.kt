@@ -108,7 +108,10 @@ object DictionaryInfoUtils {
     @JvmStatic
     fun getLocalesWithEmojiDicts(context: Context): List<Locale> =
         SubtypeSettings.getEnabledSubtypes(true)
-            .map { it.locale() }.filter { getCachedDictForLocaleAndType(it, Dictionary.TYPE_EMOJI, context) != null }
+            .map { it.locale() }.filter { loc ->
+                val lang = loc.language.lowercase(Locale.ROOT)
+                lang == "pt" || lang == "en" || getCachedDictForLocaleAndType(loc, Dictionary.TYPE_EMOJI, context) != null
+            }
 
     @JvmStatic
     fun getCachedDictForLocaleAndType(locale: Locale, type: String, context: Context): File? =
@@ -145,7 +148,7 @@ object DictionaryInfoUtils {
         val targetFile = File(cacheDir, "${dictionaryFileName.substringBefore("_")}.dict")
         try {
             FileUtils.copyStreamToNewFile(
-                context.assets.open(ASSETS_DICTIONARY_FOLDER + File.separator + dictionaryFileName),
+                context.assets.open("$ASSETS_DICTIONARY_FOLDER/$dictionaryFileName"),
                 targetFile
             )
         } catch (e: IOException) {

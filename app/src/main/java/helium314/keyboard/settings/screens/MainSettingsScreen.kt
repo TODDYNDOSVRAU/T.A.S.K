@@ -82,8 +82,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.edit
 import com.tal.task.TaskHitboxBridge
 import helium314.keyboard.latin.R
+import helium314.keyboard.latin.settings.Defaults
+import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.utils.JniUtils
 import helium314.keyboard.latin.utils.NextScreenIcon
 import helium314.keyboard.latin.utils.SubtypeLocaleUtils.displayName
@@ -92,10 +95,9 @@ import helium314.keyboard.latin.utils.TalInter
 import helium314.keyboard.latin.utils.TalJetBrainsMono
 import helium314.keyboard.latin.utils.TalSpaceGrotesk
 import helium314.keyboard.latin.utils.Theme
+import helium314.keyboard.latin.utils.prefs
 import helium314.keyboard.latin.utils.previewDark
 import helium314.keyboard.settings.initPreview
-import helium314.keyboard.settings.screens.gesturedata.END_DATE_EPOCH_MILLIS
-import helium314.keyboard.settings.screens.gesturedata.TWO_WEEKS_IN_MILLIS
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -153,6 +155,7 @@ fun MainSettingsScreen(
     onClickBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val prefs = remember(context) { context.prefs() }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -161,6 +164,22 @@ fun MainSettingsScreen(
     var activeLayer by rememberSaveable { mutableStateOf(TaskSettingsLayer.ESSENTIAL) }
     var refreshTick by remember { mutableIntStateOf(0) }
     var testInput by rememberSaveable { mutableStateOf("") }
+
+    var gestureEnabledPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_GESTURE_INPUT, Defaults.PREF_GESTURE_INPUT))
+    }
+    var bilingualPtEnPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_MULTILINGUAL_PT_EN, Defaults.PREF_MULTILINGUAL_PT_EN))
+    }
+    var autospacePunctPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_AUTOSPACE_AFTER_PUNCTUATION, Defaults.PREF_AUTOSPACE_AFTER_PUNCTUATION))
+    }
+    var smartToolbarPref by remember(refreshTick) {
+        mutableStateOf(
+            prefs.getBoolean(Settings.PREF_AUTO_SHOW_TOOLBAR, Defaults.PREF_AUTO_SHOW_TOOLBAR) &&
+                prefs.getBoolean(Settings.PREF_AUTO_HIDE_TOOLBAR, Defaults.PREF_AUTO_HIDE_TOOLBAR)
+        )
+    }
 
     val telemetry = remember(refreshTick, testInput) {
         TaskHitboxBridge.getTelemetrySnapshot(context)
@@ -379,7 +398,61 @@ fun MainSettingsScreen(
                                 }
                             }
 
-                            // 3. Core AOSP Settings
+                            // 3. Offline Gboard-Parity Productivity Controls
+                            TalSectionCard(title = "DIGITAÇÃO & PRODUTIVIDADE (OFFLINE)") {
+                                TalSwitchRow(
+                                    title = "Digitação por deslize (Glide)",
+                                    subtitle = "Deslize entre letras 100% offline com contexto PT-BR/EN-US",
+                                    checked = gestureEnabledPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        gestureEnabledPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_GESTURE_INPUT, enabled) }
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                TalSwitchRow(
+                                    title = "Multilíngue simultâneo (PT-BR + EN-US)",
+                                    subtitle = "Prevê, corrige e desliza nos dois idiomas sem trocar teclado",
+                                    checked = bilingualPtEnPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        bilingualPtEnPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_MULTILINGUAL_PT_EN, enabled) }
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                TalSwitchRow(
+                                    title = "Espaço automático após pontuação",
+                                    subtitle = "Insere espaço após vírgula, ponto e interrogação",
+                                    checked = autospacePunctPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        autospacePunctPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_AUTOSPACE_AFTER_PUNCTUATION, enabled) }
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                TalSwitchRow(
+                                    title = "Barra inteligente de ferramentas",
+                                    subtitle = "Exibe Clipboard, Editor DPAD, Flutuante e Emojis quando ocioso",
+                                    checked = smartToolbarPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        smartToolbarPref = enabled
+                                        prefs.edit {
+                                            putBoolean(Settings.PREF_AUTO_SHOW_TOOLBAR, enabled)
+                                            putBoolean(Settings.PREF_AUTO_HIDE_TOOLBAR, enabled)
+                                        }
+                                        refreshTick++
+                                    }
+                                )
+                            }
+
+                            // 4. Core AOSP Settings
                             TalSectionCard(title = "TECLADO") {
                                 TalSettingRow(
                                     title = stringResource(R.string.language_and_layouts_title),
@@ -437,18 +510,9 @@ fun MainSettingsScreen(
                                     TalRowDivider()
                                     TalSettingRow(
                                         title = stringResource(R.string.settings_screen_gesture),
-                                        subtitle = "Digitação por gestos (biblioteca nativa)",
+                                        subtitle = "Digitação por deslize offline (T.A.S.K. Glide)",
                                         iconRes = R.drawable.ic_settings_gesture,
                                         onClick = onClickGestureTyping
-                                    )
-                                }
-                                if (JniUtils.sHaveGestureLib && System.currentTimeMillis() < END_DATE_EPOCH_MILLIS + TWO_WEEKS_IN_MILLIS) {
-                                    TalRowDivider()
-                                    TalSettingRow(
-                                        title = stringResource(R.string.gesture_data_screen),
-                                        subtitle = null,
-                                        iconRes = R.drawable.ic_settings_gesture,
-                                        onClick = onClickDataGathering
                                     )
                                 }
                             }
@@ -463,7 +527,7 @@ fun MainSettingsScreen(
                                 TalRowDivider()
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_about),
-                                    subtitle = "T.A.S.K. v3.0.0 · Totally Accurate Labs (GPL-3.0)",
+                                    subtitle = "T.A.S.K. v3.1.0 · Totally Accurate Labs (GPL-3.0)",
                                     iconRes = R.drawable.ic_settings_about,
                                     onClick = onClickAbout
                                 )
@@ -579,6 +643,10 @@ fun MainSettingsScreen(
                                     verticalArrangement = Arrangement.spacedBy(GridInset)
                                 ) {
                                     TalMetricRow("Motor nativo", "AOSP C++ libjni_latinime.so")
+                                    TalMetricRow("Motor Glide", "T.A.S.K. SHARK² offline")
+                                    TalMetricRow("Último deslize", "${telemetry.lastGlideWord} (${"%.2f".format(telemetry.lastGlideLatencyMs)} ms · ${telemetry.totalGlides}x)")
+                                    TalMetricRow("Idiomas simultâneos", if (telemetry.bilingualPtEn) "PT-BR + EN-US" else "Idioma único")
+                                    TalMetricRow("Busca de emojis", "PT-BR + EN-US offline")
                                     TalMetricRow("RAM Trie (Flat-Int)", "${telemetry.estimatedTrieRamKb} KB")
                                     TalMetricRow("Permissão INTERNET", "AUSENTE (0)")
                                     TalMetricRow("Dicionários S23", "PT-BR 169k · EN-US 129k")
@@ -782,6 +850,45 @@ private fun TalAppleSegmentedControl(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TalSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = TouchTargetMin)
+            .padding(horizontal = GridInset, vertical = GridInset)
+            .semantics(mergeDescendants = true) {},
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = GridInset)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary
+            )
+        )
     }
 }
 

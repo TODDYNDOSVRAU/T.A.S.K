@@ -60,12 +60,17 @@ class EmojiParser(private val params: KeyboardParams, private val context: Conte
 
     private fun parseEmojiKeyNew(emoji: String): KeyParams? {
         if (SupportedEmojis.isUnsupported(emoji)) return null
+        val flags = if (params.mId.element == KeyboardElement.EMOJI_EMOTICONS) {
+            Key.LABEL_FLAGS_FONT_NORMAL or Key.LABEL_FLAGS_AUTO_SCALE
+        } else {
+            Key.LABEL_FLAGS_FONT_NORMAL
+        }
         return KeyParams(
             emoji,
             emoji.getCode(),
             if (emojiPopupSpecs[emoji] != null) EMOJI_HINT_LABEL else null,
             emojiPopupSpecs[emoji],
-            Key.LABEL_FLAGS_FONT_NORMAL,
+            flags,
             params
         )
     }

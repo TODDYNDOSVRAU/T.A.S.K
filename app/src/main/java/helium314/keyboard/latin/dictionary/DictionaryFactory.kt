@@ -32,12 +32,14 @@ object DictionaryFactory {
 
     fun createEmojiDictionaryCollection(context: Context, locale: Locale, otherLocales: Collection<Locale>): DictionaryCollection? {
         val locales = listOf(locale) + otherLocales
-        val dicts = locales.mapNotNull { locale ->
-            DictionaryInfoUtils.getCachedDictForLocaleAndType(locale, Dictionary.TYPE_EMOJI, context)
-                ?.let { getDictionary(it, locale) }
+        val dicts = locales.mapNotNull { loc ->
+            DictionaryInfoUtils.getCachedDictForLocaleAndType(loc, Dictionary.TYPE_EMOJI, context)
+                ?.let { getDictionary(it, loc) }
+        }.toMutableList()
+        if (dicts.isEmpty()) {
+            dicts.add(com.tal.task.TaskEmojiDictionary(context, locale, false))
         }
-        return if (dicts.isEmpty()) null
-        else DictionaryCollection(Dictionary.TYPE_EMOJI, locale, dicts, FloatArray(dicts.size) { 1f })
+        return DictionaryCollection(Dictionary.TYPE_EMOJI, locale, dicts, FloatArray(dicts.size) { 1f })
     }
 
     fun getMainDictsForLocale(context: Context, locale: Locale, useEmojiDict: Boolean): List<Dictionary> {
@@ -52,6 +54,12 @@ object DictionaryFactory {
             if (dictList.any { it.mDictType == type }) return@forEach
             val extractedFile = DictionaryInfoUtils.extractAssetsDictionary(filename, locale, context) ?: return@forEach
             checkAndAddDictionaryToListIfNewType(extractedFile, dictList, locale)
+        }
+        if (useEmojiDict && dictList.none { it.mDictType == Dictionary.TYPE_EMOJI }) {
+            val lang = locale.language.lowercase(Locale.ROOT)
+            if (lang == "pt" || lang == "en") {
+                dictList.add(com.tal.task.TaskEmojiDictionary(context, locale, true))
+            }
         }
         return dictList
     }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.tal.task"
         minSdk = 26
         targetSdk = 35
-        versionCode = 300
-        versionName = "3.0.0"
+        versionCode = 310
+        versionName = "3.1.0"
         ndk {
             abiFilters.clear()
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))

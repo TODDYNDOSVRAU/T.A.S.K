@@ -86,6 +86,31 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
         val trailingSingleQuotesCount = StringUtils.getTrailingSingleQuotesCount(typedWordString)
         val capsMode = getCapsModeForTyping(wordComposer, keyboard)
         val suggestionsContainer = ArrayList(suggestionResults)
+        if (resultsArePredictions && suggestionsContainer.size < 3 && Settings.getValues().mBigramPredictionEnabled) {
+            val prev1 = ngramContext.getNthPrevWord(1)?.toString()
+            val prev2 = ngramContext.getNthPrevWord(2)?.toString()
+            val isPt = mDictionaryFacilitator.mainLocale.language.equals("pt", ignoreCase = true)
+            val bilingual = com.tal.task.TaskMultilingualHelper.isBilingualPtEnActive(
+                mDictionaryFacilitator.mainLocale,
+                Settings.getValues().mSecondaryLocales
+            )
+            val offlineNext = com.tal.task.TaskHitboxBridge.getNextWordCandidates(prev2, prev1, isPt, bilingual)
+            offlineNext.forEachIndexed { idx, cand ->
+                if (suggestionsContainer.size < 3 && suggestionsContainer.none { it.word.equals(cand, ignoreCase = true) }) {
+                    suggestionsContainer.add(
+                        SuggestedWordInfo(
+                            cand,
+                            "",
+                            160 - idx * 5,
+                            SuggestedWordInfo.KIND_PREDICTION,
+                            Dictionary.DICTIONARY_HARDCODED,
+                            SuggestedWordInfo.NOT_AN_INDEX,
+                            SuggestedWordInfo.NOT_A_CONFIDENCE
+                        )
+                    )
+                }
+            }
+        }
 
         // add suggestions for the "extended word" at cursor
         // using a different iterator that also includes digits and maybe more
