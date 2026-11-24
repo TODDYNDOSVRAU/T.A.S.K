@@ -1364,9 +1364,11 @@ public class LatinIME extends InputMethodService implements
         // Cache the auto-correction in accessibility code so we can speak it if the user
         // touches a key that will insert it.
         AccessibilityUtils.Companion.getInstance().setAutoCorrection(suggestedWords);
-        final helium314.keyboard.latin.suggestions.SuggestedWordInfo talTyped = suggestedWords.getTypedWordInfoOrNull();
-        final String talPrefix = (talTyped != null) ? talTyped.getWord() : null;
-        syncTaskHitboxContext(talPrefix);
+        if (suggestedWords.getInputStyle() != InputStyle.UPDATE_BATCH) {
+            final helium314.keyboard.latin.suggestions.SuggestedWordInfo talTyped = suggestedWords.getTypedWordInfoOrNull();
+            final String talPrefix = (talTyped != null) ? talTyped.getWord() : null;
+            syncTaskHitboxContext(talPrefix);
+        }
     }
 
     @Nullable private String mLastTaskSyncText = null;
@@ -1390,14 +1392,18 @@ public class LatinIME extends InputMethodService implements
         if (before == null && fallbackPrefix != null) {
             before = fallbackPrefix;
         }
-        final String beforeStr = (before != null) ? before.toString() : "";
+        final CharSequence beforeSeq = (before != null) ? before : "";
         final String talLocale = mRichImm.getCurrentSubtype().getLocale().toLanguageTag();
         final boolean bilingual = com.tal.task.TaskMultilingualHelper.isBilingualPtEnActive(
                 mRichImm.getCurrentSubtype().getLocale(),
                 mSettings.getCurrent().mSecondaryLocales);
-        if (!beforeStr.equals(mLastTaskSyncText)
+        final boolean textMatches = mLastTaskSyncText != null
+                && beforeSeq.length() == mLastTaskSyncText.length()
+                && android.text.TextUtils.regionMatches(beforeSeq, 0, mLastTaskSyncText, 0, beforeSeq.length());
+        if (!textMatches
                 || !talLocale.equals(mLastTaskSyncLocale)
                 || bilingual != mLastTaskSyncBilingual) {
+            final String beforeStr = beforeSeq.toString();
             mLastTaskSyncText = beforeStr;
             mLastTaskSyncLocale = talLocale;
             mLastTaskSyncBilingual = bilingual;
@@ -1409,9 +1415,6 @@ public class LatinIME extends InputMethodService implements
             if (com.tal.task.TaskHitboxBridge.isVisualizerActive(this)) {
                 talKbView.invalidate();
             }
-        }
-        if (hasSuggestionStripView()) {
-            mSuggestionStripView.refreshTaskVizPill();
         }
     }
 

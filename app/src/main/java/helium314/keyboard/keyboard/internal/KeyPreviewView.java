@@ -95,14 +95,7 @@ public class KeyPreviewView extends TextView {
         if (TextUtils.isEmpty(text)) {
             return 0.0f;
         }
-        final int len = text.length();
-        final float[] widths = new float[len];
-        final int count = paint.getTextWidths(text, 0, len, widths);
-        float width = 0;
-        for (int i = 0; i < count; i++) {
-            width += widths[i];
-        }
-        return width;
+        return paint.measureText(text);
     }
 
     // Background state set

@@ -13,19 +13,27 @@ import android.content.res.TypedArray;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
 import android.graphics.Paint;
 import android.graphics.Paint.Align;
 import android.graphics.PorterDuff;
+import android.graphics.RecordingCanvas;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.RenderNode;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.NinePatchDrawable;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.graphics.BlendModeColorFilterCompat;
+import androidx.core.graphics.BlendModeCompat;
+import androidx.core.graphics.ColorUtils;
 
 import helium314.keyboard.keyboard.emoji.EmojiPageKeyboardView;
 import helium314.keyboard.keyboard.internal.KeyDrawParams;
@@ -88,6 +96,9 @@ public class KeyboardView extends View {
     private final Rect mClipRect = new Rect();
     /** The keyboard bitmap buffer for faster updates */
     private Bitmap mOffscreenBuffer;
+    private RenderNode mHardwareKeysNode;
+    private int mNodeWidth = -1;
+    private int mNodeHeight = -1;
     /** Flag for whether the key hints should be displayed */
     private boolean mShowsHints;
     /** Scale for downscaling icons and fixed size backgrounds if keyboard height is set below 80% */
@@ -98,6 +109,14 @@ public class KeyboardView extends View {
     @NonNull
     private final Paint mPaint = new Paint();
     private final Paint.FontMetrics mFontMetrics = new Paint.FontMetrics();
+    @NonNull
+    private final Paint mKeyCapPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    @NonNull
+    private final RectF mKeyCapRect = new RectF();
+    private boolean mIsDarkBackground = true;
+    private int mCachedShiftIconColor = Color.TRANSPARENT;
+    @Nullable
+    private ColorFilter mShiftActiveIconColorFilter;
 
     public KeyboardView(final Context context, final AttributeSet attrs) {
         this(context, attrs, R.attr.keyboardViewStyle);
@@ -184,6 +203,13 @@ public class KeyboardView extends View {
         }
 
         mKeyboard = keyboard;
+        mIsDarkBackground = ColorUtils.calculateLuminance(mColors.get(ColorType.MAIN_BACKGROUND)) < 0.5;
+        final int invertedGlyphColor = mIsDarkBackground ? Color.rgb(8, 8, 8) : Color.rgb(0xF2, 0xF2, 0xF0);
+        if (mShiftActiveIconColorFilter == null || invertedGlyphColor != mCachedShiftIconColor) {
+            mCachedShiftIconColor = invertedGlyphColor;
+            mShiftActiveIconColorFilter = BlendModeColorFilterCompat.createBlendModeColorFilterCompat(
+                    invertedGlyphColor, BlendModeCompat.SRC_IN);
+        }
         mKeyScaleForText = (float) Math.sqrt(1 / Settings.getValues().mKeyboardHeightScale);
         int scale = Math.min(2 * keyboard.mMostCommonKeyWidth, keyboard.mMostCommonKeyHeight - keyboard.mVerticalGap);
         int scaledKeySize = (int) (scale * mKeyScaleForText);
@@ -238,7 +264,34 @@ public class KeyboardView extends View {
     protected void onDraw(@NonNull final Canvas canvas) {
         super.onDraw(canvas);
         if (canvas.isHardwareAccelerated()) {
-            onDrawKeyboard(canvas);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (mHardwareKeysNode == null) {
+                    mHardwareKeysNode = new RenderNode("TaskKeys");
+                }
+                final int w = getWidth();
+                final int h = getHeight();
+                final boolean needsRecord = !mHardwareKeysNode.hasDisplayList()
+                        || mNodeWidth != w || mNodeHeight != h
+                        || mInvalidateAllKeys || !mInvalidatedKeys.isEmpty();
+                if (needsRecord && w > 0 && h > 0) {
+                    mNodeWidth = w;
+                    mNodeHeight = h;
+                    mHardwareKeysNode.setPosition(0, 0, w, h);
+                    final RecordingCanvas rc = mHardwareKeysNode.beginRecording(w, h);
+                    try {
+                        onDrawKeyboard(rc);
+                    } finally {
+                        mHardwareKeysNode.endRecording();
+                    }
+                }
+                if (mHardwareKeysNode.hasDisplayList()) {
+                    canvas.drawRenderNode(mHardwareKeysNode);
+                } else {
+                    onDrawKeyboard(canvas);
+                }
+            } else {
+                onDrawKeyboard(canvas);
+            }
             com.tal.task.TaskHitboxBridge.drawOverlay(canvas, getKeyboard(), getContext());
             return;
         }
@@ -272,6 +325,11 @@ public class KeyboardView extends View {
     }
 
     private void freeOffscreenBuffer() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && mHardwareKeysNode != null) {
+            mHardwareKeysNode.discardDisplayList();
+            mNodeWidth = -1;
+            mNodeHeight = -1;
+        }
         mOffscreenCanvas.setBitmap(null);
         mOffscreenCanvas.setMatrix(null);
         if (mOffscreenBuffer != null) {
@@ -350,11 +408,64 @@ public class KeyboardView extends View {
         canvas.translate(-keyDrawX, -keyDrawY);
     }
 
+    private boolean isAppleRoundedMainKeyView() {
+        return mColors.getHasKeyBorders()
+                && STYLE_ROUNDED.equals(mColors.getThemeStyle())
+                && !(this instanceof PopupKeysKeyboardView)
+                && !(this instanceof MoreSuggestionsView)
+                && !(this instanceof EmojiPageKeyboardView);
+    }
+
+    private static boolean isShiftActiveOnKeyboard(@NonNull final Key key, @Nullable final Keyboard keyboard) {
+        return key.isShift() && keyboard != null && keyboard.mId.getElement().isAlphabetShifted();
+    }
+
     // Draw key background.
     protected void onDrawKeyBackground(@NonNull final Key key, @NonNull final Canvas canvas,
             @NonNull final Drawable background) {
         final int keyWidth = key.getDrawWidth();
         final int keyHeight = key.getHeight();
+        if (isAppleRoundedMainKeyView()) {
+            if (key.getBackgroundType() == Key.BACKGROUND_TYPE_EMPTY) {
+                return;
+            }
+            final float density = getResources().getDisplayMetrics().density;
+            final float dp1 = Math.max(1f, density);
+            final float radius = 6f * density;
+            final boolean shiftActive = isShiftActiveOnKeyboard(key, getKeyboard());
+            final int capColor;
+            if (shiftActive) {
+                capColor = mColors.get(ColorType.KEY_TEXT);
+            } else if (key.hasActionKeyBackground()) {
+                capColor = mColors.get(ColorType.ACTION_KEY_BACKGROUND);
+            } else if (key.getBackgroundType() == Key.BACKGROUND_TYPE_SPACEBAR) {
+                capColor = mColors.get(ColorType.SPACE_BAR_BACKGROUND);
+            } else if (key.hasFunctionalBackground()) {
+                capColor = mColors.get(ColorType.FUNCTIONAL_KEY_BACKGROUND);
+            } else {
+                capColor = mColors.get(ColorType.KEY_BACKGROUND);
+            }
+            mKeyCapPaint.setStyle(Paint.Style.FILL);
+            if (!key.isPressed()) {
+                mKeyCapPaint.setColor(mIsDarkBackground ? 0x88000000 : 0x33000000);
+                mKeyCapRect.set(0f, dp1, keyWidth, keyHeight);
+                canvas.drawRoundRect(mKeyCapRect, radius, radius, mKeyCapPaint);
+                mKeyCapPaint.setColor(capColor);
+                mKeyCapRect.set(0f, 0f, keyWidth, Math.max(dp1, keyHeight - dp1));
+                canvas.drawRoundRect(mKeyCapRect, radius, radius, mKeyCapPaint);
+            } else {
+                final int pressedColor = shiftActive
+                        ? capColor
+                        : ColorUtils.blendARGB(
+                                capColor,
+                                mIsDarkBackground ? Color.WHITE : Color.BLACK,
+                                mIsDarkBackground ? 0.10f : 0.08f);
+                mKeyCapPaint.setColor(pressedColor);
+                mKeyCapRect.set(0f, dp1, keyWidth, keyHeight);
+                canvas.drawRoundRect(mKeyCapRect, radius, radius, mKeyCapPaint);
+            }
+            return;
+        }
         final int bgWidth, bgHeight, bgX, bgY;
         if (key.needsToKeepBackgroundAspectRatio(mDefaultKeyLabelFlags)
                 // HACK: To disable expanding normal/functional key background.
@@ -381,8 +492,11 @@ public class KeyboardView extends View {
             @NonNull final Paint paint, @NonNull final KeyDrawParams params) {
         final int keyWidth = key.getDrawWidth();
         final int keyHeight = key.getHeight();
+        final boolean appleCap = isAppleRoundedMainKeyView();
+        final float dp1 = appleCap ? Math.max(1f, getResources().getDisplayMetrics().density) : 0f;
+        final float pressOffsetY = (appleCap && key.isPressed()) ? dp1 : 0f;
         final float centerX = keyWidth * 0.5f;
-        final float centerY = keyHeight * 0.5f;
+        final float centerY = (keyHeight - dp1) * 0.5f + pressOffsetY;
 
         // Draw key label.
         final Keyboard keyboard = getKeyboard();
@@ -394,7 +508,10 @@ public class KeyboardView extends View {
         if (label != null) {
             paint.setTypeface(KeyboardTypeface.resolve(label, key.selectTypeface(params)));
             paint.setTextSize(key.selectTextSize(params) * mFontSizeMultiplier);
-            final float labelCharHeight = TypefaceUtils.getReferenceCharHeight(paint);
+            final boolean isSingleLower = label.length() == 1 && Character.isLowerCase(label.charAt(0));
+            final float labelCharHeight = isSingleLower
+                    ? TypefaceUtils.getLowercaseReferenceCharHeight(paint)
+                    : TypefaceUtils.getReferenceCharHeight(paint);
             final float labelCharWidth = TypefaceUtils.getReferenceCharWidth(paint);
 
             // Vertical label text alignment.
@@ -430,6 +547,8 @@ public class KeyboardView extends View {
             if (key.isEnabled()) {
                 if (StringUtilsKt.isEmoji(label))
                     paint.setColor(key.selectTextColor(params) | 0xFF000000); // ignore alpha for emojis (though actually color isn't applied anyway and we could just set white)
+                else if (appleCap && isShiftActiveOnKeyboard(key, keyboard))
+                    paint.setColor(mCachedShiftIconColor);
                 else if (key.hasActionKeyBackground())
                     paint.setColor(mColors.get(ColorType.ACTION_KEY_ICON));
                 else if (this instanceof EmojiPageKeyboardView)
@@ -542,7 +661,7 @@ public class KeyboardView extends View {
             int iconHeight = (int) (icon.getIntrinsicHeight() * mIconScaleFactor);
             int iconY = key.isAlignIconToBottom()
                 ? keyHeight - iconHeight
-                : (keyHeight - iconHeight) / 2; // Align vertically center.
+                : ((keyHeight - iconHeight) / 2 + (appleCap ? (int) (pressOffsetY - dp1 * 0.5f) : 0)); // Align vertically center.
             int iconX = (keyWidth - iconWidth) / 2; // Align horizontally center.
             setKeyIconColor(key, icon, keyboard);
             drawIcon(canvas, icon, iconX, iconY, iconWidth, iconHeight);
@@ -638,7 +757,9 @@ public class KeyboardView extends View {
     }
 
     private void setKeyIconColor(Key key, Drawable icon, Keyboard keyboard) {
-        if (key.hasActionKeyBackground()) {
+        if (isShiftActiveOnKeyboard(key, keyboard) && isAppleRoundedMainKeyView() && mShiftActiveIconColorFilter != null) {
+            icon.setColorFilter(mShiftActiveIconColorFilter);
+        } else if (key.hasActionKeyBackground()) {
             mColors.setColor(icon, ColorType.ACTION_KEY_ICON);
         } else if (key.isShift() && keyboard != null) {
             if (keyboard.mId.getElement().isAlphabetShifted())

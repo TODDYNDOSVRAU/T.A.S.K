@@ -210,6 +210,7 @@ class KeyboardStateSelector(
     val emojiKeyEnabled: AbstractKeyData? = null,
     val languageKeyEnabled: AbstractKeyData? = null,
     val dpadKeyEnabled: AbstractKeyData? = null,
+    val bottomPunctuationEnabled: AbstractKeyData? = null,
     val symbols: AbstractKeyData? = null,
     val moreSymbols: AbstractKeyData? = null,
     val dpad: AbstractKeyData? = null,
@@ -224,6 +225,8 @@ class KeyboardStateSelector(
             languageKeyEnabled?.compute(params)?.let { return it }
         if (params.mId.dpadKeyEnabled)
             dpadKeyEnabled?.compute(params)?.let { return it }
+        if (params.mId.bottomPunctuationEnabled)
+            bottomPunctuationEnabled?.compute(params)?.let { return it }
         if (params.mId.element == KeyboardElement.SYMBOLS)
             symbols?.compute(params)?.let { return it }
         if (params.mId.element == KeyboardElement.SYMBOLS_SHIFTED)

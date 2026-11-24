@@ -7,9 +7,9 @@ import helium314.keyboard.keyboard.Keyboard
 import helium314.keyboard.latin.dictionary.Dictionary
 import helium314.keyboard.latin.suggestions.SuggestedWordInfo
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -17,16 +17,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Clean-room SHARK²-inspired Offline Glide / Swipe Typing Decoder for T.A.S.K.
+ * Clean-room SHARK²-inspired Offline Glide / Swipe Typing Decoder for T.A.S.K. v3.2.0.
  *
- * Combines:
- * - Location match (point-by-point arc-length-resampled spatial error vs ideal key-center polyline)
- * - Scale- & translation-invariant shape match (normalized to stroke centroid & span)
- * - Monotonic ordered letter alignment (verifies each letter along the trajectory order)
- * - Sharp corner coverage (penalizes trajectories with turns not explained by candidate vertices)
- * - Unigram log-frequency prior + TaskHitboxBridge full-writing context & topic fusion
- *
- * 100% offline, zero INTERNET permission, CSR bucket indexing by (first, last) character.
+ * Zero-String-Heap Architecture (D17):
+ * - GlideLexicon stores all words, folded ASCII and collapsed key indices strictly inside flat
+ *   primitive ByteArray / IntArray buffers (0 Array<String> fields on the JVM heap).
+ * - Only the <= 8 top candidates that survive scoring materialize a Kotlin String.
+ * - Pre-allocated scratch buffers guarded by decodeLock; releases lexicons on TRIM_MEMORY_UI_HIDDEN.
  */
 object TaskGlideDecoder {
 
@@ -38,25 +35,40 @@ object TaskGlideDecoder {
     )
 
     class GlideLexicon(
-        val words: Array<String>,
-        val folded: Array<String>,
-        val collapsed: Array<String>,
+        private val utf8Words: ByteArray,
+        private val wordStart: IntArray,
+        val foldedBytes: ByteArray,
+        val foldedStart: IntArray,
+        val collapsedBytes: ByteArray,
+        val collapsedStart: IntArray,
         val logFreqs: FloatArray,
         val bucketStart: IntArray,   // size 26 * 26 + 1 = 677
-        val bucketWordIdx: IntArray  // indices into words/folded/collapsed/logFreqs
+        val bucketWordIdx: IntArray  // indices into logFreqs / *Start offsets
     ) {
-        val wordCount: Int get() = words.size
+        val wordCount: Int get() = logFreqs.size
+
+        fun wordAt(wi: Int): String {
+            val start = wordStart[wi]
+            val len = wordStart[wi + 1] - start
+            return String(utf8Words, start, len, Charsets.UTF_8)
+        }
 
         companion object {
             fun fromLines(lines: Sequence<String>): GlideLexicon {
-                val wordList = ArrayList<String>(16000)
-                val foldedList = ArrayList<String>(16000)
-                val collapsedList = ArrayList<String>(16000)
+                val utf8Stream = ByteArrayOutputStream(192 * 1024)
+                val foldedStream = ByteArrayOutputStream(160 * 1024)
+                val collapsedStream = ByteArrayOutputStream(144 * 1024)
+
+                val wordStarts = ArrayList<Int>(16000)
+                val foldedStarts = ArrayList<Int>(16000)
+                val collapsedStarts = ArrayList<Int>(16000)
+                val firstChars = ByteArrayList(16000)
+                val lastChars = ByteArrayList(16000)
                 val logFreqList = ArrayList<Float>(16000)
 
                 val bucketCounts = IntArray(676)
-                val foldBuf = CharArray(48)
-                val collBuf = CharArray(48)
+                val foldBuf = ByteArray(48)
+                val collBuf = ByteArray(48)
 
                 for (rawLine in lines) {
                     val tab = rawLine.indexOf('\t')
@@ -67,7 +79,7 @@ object TaskGlideDecoder {
                     val freq = rawLine.substring(tab + 1).trim().toIntOrNull()?.coerceAtLeast(1) ?: 100
                     var fLen = 0
                     var cLen = 0
-                    var lastColl = '\u0000'
+                    var lastColl = -1
                     var validWord = true
 
                     for (k in 0 until origWord.length) {
@@ -77,48 +89,64 @@ object TaskGlideDecoder {
                             break
                         }
                         if (fLen < foldBuf.size) {
-                            foldBuf[fLen++] = fc
-                            if (fc != lastColl) {
-                                collBuf[cLen++] = fc
-                                lastColl = fc
+                            foldBuf[fLen++] = fc.code.toByte()
+                            val keyIdx = fc - 'a'
+                            if (keyIdx != lastColl) {
+                                collBuf[cLen++] = keyIdx.toByte()
+                                lastColl = keyIdx
                             }
                         }
                     }
                     if (!validWord || fLen == 0 || cLen == 0) continue
 
-                    val firstIdx = foldBuf[0] - 'a'
-                    val lastIdx = foldBuf[fLen - 1] - 'a'
+                    val firstIdx = (foldBuf[0].toInt() and 0xFF) - 'a'.code
+                    val lastIdx = (foldBuf[fLen - 1].toInt() and 0xFF) - 'a'.code
                     if (firstIdx !in 0..25 || lastIdx !in 0..25) continue
 
-                    val wordIdx = wordList.size
-                    wordList.add(origWord)
-                    foldedList.add(String(foldBuf, 0, fLen))
-                    collapsedList.add(String(collBuf, 0, cLen))
+                    wordStarts.add(utf8Stream.size())
+                    val origBytes = origWord.toByteArray(Charsets.UTF_8)
+                    utf8Stream.write(origBytes, 0, origBytes.size)
+
+                    foldedStarts.add(foldedStream.size())
+                    foldedStream.write(foldBuf, 0, fLen)
+
+                    collapsedStarts.add(collapsedStream.size())
+                    collapsedStream.write(collBuf, 0, cLen)
+
+                    firstChars.add(firstIdx.toByte())
+                    lastChars.add(lastIdx.toByte())
                     logFreqList.add(ln(freq.toFloat() + 1f))
                     bucketCounts[firstIdx * 26 + lastIdx]++
-                    // Keep index count synced with wordList
-                    if (wordIdx == Int.MAX_VALUE) break
                 }
+
+                val total = logFreqList.size
+                wordStarts.add(utf8Stream.size())
+                foldedStarts.add(foldedStream.size())
+                collapsedStarts.add(collapsedStream.size())
 
                 val bucketStart = IntArray(677)
                 for (b in 0 until 676) {
                     bucketStart[b + 1] = bucketStart[b] + bucketCounts[b]
                 }
-                val total = bucketStart[676]
                 val bucketWordIdx = IntArray(total)
                 val cursor = bucketStart.copyOf()
-
                 for (i in 0 until total) {
-                    val f = foldedList[i]
-                    val b = (f[0] - 'a') * 26 + (f[f.length - 1] - 'a')
+                    val b = firstChars[i] * 26 + lastChars[i]
                     bucketWordIdx[cursor[b]++] = i
                 }
 
+                val wordStartArr = IntArray(total + 1) { i -> wordStarts[i] }
+                val foldedStartArr = IntArray(total + 1) { i -> foldedStarts[i] }
+                val collapsedStartArr = IntArray(total + 1) { i -> collapsedStarts[i] }
                 val freqsArr = FloatArray(total) { i -> logFreqList[i] }
+
                 return GlideLexicon(
-                    words = wordList.toTypedArray(),
-                    folded = foldedList.toTypedArray(),
-                    collapsed = collapsedList.toTypedArray(),
+                    utf8Words = utf8Stream.toByteArray(),
+                    wordStart = wordStartArr,
+                    foldedBytes = foldedStream.toByteArray(),
+                    foldedStart = foldedStartArr,
+                    collapsedBytes = collapsedStream.toByteArray(),
+                    collapsedStart = collapsedStartArr,
                     logFreqs = freqsArr,
                     bucketStart = bucketStart,
                     bucketWordIdx = bucketWordIdx
@@ -137,6 +165,20 @@ object TaskGlideDecoder {
                 }
             }
         }
+    }
+
+    private class ByteArrayList(initialCapacity: Int) {
+        private var data = ByteArray(initialCapacity)
+        private var size = 0
+
+        fun add(b: Byte) {
+            if (size == data.size) {
+                data = data.copyOf(data.size * 2)
+            }
+            data[size++] = b
+        }
+
+        operator fun get(index: Int): Int = data[index].toInt() and 0xFF
     }
 
     private const val RESAMPLE_N = 32
@@ -169,6 +211,9 @@ object TaskGlideDecoder {
     private var cachedAvgKeyH = 1f
 
     // Pre-allocated scratch buffers guarded by decodeLock (0 allocations per candidate evaluation)
+    private val filteredXBuf = IntArray(512)
+    private val filteredYBuf = IntArray(512)
+    private val testDistMat = FloatArray(26 * 26)
     private val rawX = FloatArray(512)
     private val rawY = FloatArray(512)
     private val cumArc = FloatArray(512)
@@ -193,6 +238,7 @@ object TaskGlideDecoder {
     private val wsY = FloatArray(RESAMPLE_N)
     private val dpPrev = FloatArray(RESAMPLE_N)
     private val dpCurr = FloatArray(RESAMPLE_N)
+    private val foldBuf = StringBuilder(64)
 
     // Pre-allocated top-K result slots (guarded by decodeLock)
     private val topWords = arrayOfNulls<String>(MAX_CANDIDATES)
@@ -218,7 +264,7 @@ object TaskGlideDecoder {
 
     @JvmStatic
     fun onTrimMemory(level: Int) {
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
             synchronized(loadLock) {
                 ptLexicon = null
                 enLexicon = null
@@ -241,29 +287,26 @@ object TaskGlideDecoder {
         if (pointerSize < 2 || specs.isEmpty()) return emptyList()
         val t0 = System.nanoTime()
 
-        // Filter primary pointer raw coords first
-        val primaryId = pointerIds[0]
-        var count = 0
-        val cap = min(pointerSize, rawX.size)
-        val filteredX = IntArray(cap)
-        val filteredY = IntArray(cap)
-        for (i in 0 until pointerSize) {
-            if (pointerIds[i] == primaryId && count < cap) {
-                filteredX[count] = xs[i]
-                filteredY[count] = ys[i]
-                count++
-            }
-        }
-        if (count < 2) return emptyList()
-
-        val foldedPrev1 = foldStringAscii(prevWord1)
-        val foldedPrev2 = foldStringAscii(prevWord2)
-
         val results = synchronized(decodeLock) {
+            val primaryId = pointerIds[0]
+            var count = 0
+            val cap = min(pointerSize, filteredXBuf.size)
+            for (i in 0 until pointerSize) {
+                if (pointerIds[i] == primaryId && count < cap) {
+                    filteredXBuf[count] = xs[i]
+                    filteredYBuf[count] = ys[i]
+                    count++
+                }
+            }
+            if (count < 2) return emptyList()
+
+            val foldedPrev1 = foldStringAsciiLocked(prevWord1)
+            val foldedPrev2 = foldStringAsciiLocked(prevWord2)
+
             updateKeyboardGeometryLocked(keyboard)
             decodeCoreLocked(
-                xs = filteredX,
-                ys = filteredY,
+                xs = filteredXBuf,
+                ys = filteredYBuf,
                 pointCount = count,
                 keyX = cachedKeyX,
                 keyY = cachedKeyY,
@@ -313,12 +356,11 @@ object TaskGlideDecoder {
         isUpdating: Boolean = false
     ): List<SuggestedWordInfo> {
         if (pointCount < 2 || specs.isEmpty() || keyW <= 0f) return emptyList()
-        val distMat = FloatArray(26 * 26)
-        computeDistMatrix(keyCentersX, keyCentersY, hasKey, keyW, distMat)
-        val p1 = foldStringAscii(prevWord1)
-        val p2 = foldStringAscii(prevWord2)
-
         return synchronized(decodeLock) {
+            computeDistMatrix(keyCentersX, keyCentersY, hasKey, keyW, testDistMat)
+            val p1 = foldStringAsciiLocked(prevWord1)
+            val p2 = foldStringAsciiLocked(prevWord2)
+
             decodeCoreLocked(
                 xs = xs,
                 ys = ys,
@@ -326,7 +368,7 @@ object TaskGlideDecoder {
                 keyX = keyCentersX,
                 keyY = keyCentersY,
                 hasKey = hasKey,
-                keyDistNorm = distMat,
+                keyDistNorm = testDistMat,
                 keyW = keyW,
                 keyH = keyH,
                 specs = specs,
@@ -420,7 +462,7 @@ object TaskGlideDecoder {
         hasKey: BooleanArray,
         keyDistNorm: FloatArray,
         keyW: Float,
-        keyH: Float,
+        @Suppress("UNUSED_PARAMETER") keyH: Float,
         specs: List<LanguageDecodeSpec>,
         lexiconForLocale: (Locale) -> GlideLexicon?,
         prevWord1: String,
@@ -428,11 +470,10 @@ object TaskGlideDecoder {
         isUpdating: Boolean
     ): List<SuggestedWordInfo> {
         val minStep = keyW * 0.06f
-        var dedup = 0
         rawX[0] = xs[0].toFloat()
         rawY[0] = ys[0].toFloat()
         cumArc[0] = 0f
-        dedup = 1
+        var dedup = 1
 
         val nPts = min(pointCount, rawX.size)
         for (i in 1 until nPts) {
@@ -545,9 +586,10 @@ object TaskGlideDecoder {
             val lexicon = lexiconForLocale(spec.locale) ?: continue
             val isPt = spec.locale.language.equals("pt", ignoreCase = true)
             val weight = spec.weightForLocale
-            val words = lexicon.words
-            val folded = lexicon.folded
-            val collapsed = lexicon.collapsed
+            val foldedBytes = lexicon.foldedBytes
+            val foldedStart = lexicon.foldedStart
+            val collapsedBytes = lexicon.collapsedBytes
+            val collapsedStart = lexicon.collapsedStart
             val logFreqs = lexicon.logFreqs
             val bStart = lexicon.bucketStart
             val bWordIdx = lexicon.bucketWordIdx
@@ -565,13 +607,12 @@ object TaskGlideDecoder {
                     val to = bStart[bucket + 1]
                     for (bi in from until to) {
                         val wi = bWordIdx[bi]
-                        val fWord = folded[wi]
-                        if (fWord.length < 2 && !allowSingleLetter) continue
-                        val origWord = words[wi]
-                        if (spec.isBlacklisted(origWord)) continue
+                        val fStart = foldedStart[wi]
+                        val fLen = foldedStart[wi + 1] - fStart
+                        if (fLen < 2 && !allowSingleLetter) continue
 
-                        val col = collapsed[wi]
-                        val m = col.length
+                        val cStart = collapsedStart[wi]
+                        val m = collapsedStart[wi + 1] - cStart
                         if (m == 0 || m > polyX.size) continue
 
                         // 1. Fast ideal path length & bbox pruning
@@ -580,7 +621,7 @@ object TaskGlideDecoder {
                         var prevK = -1
                         var outOfBox = false
                         for (ci in 0 until m) {
-                            val kIdx = col[ci] - 'a'
+                            val kIdx = collapsedBytes[cStart + ci].toInt() and 0xFF
                             if (kIdx !in 0..25 || !hasKey[kIdx]) {
                                 missingKey = true
                                 break
@@ -720,10 +761,10 @@ object TaskGlideDecoder {
                             }
                         }
 
-                        // 6. Frequency prior & whole-writing context bonus
+                        // 6. Frequency prior & whole-writing context bonus (0 String allocations)
                         val freqBonus = ((logFreqs[wi] - 4.0f).coerceIn(-1.0f, 6.0f)) * 0.09f
                         val ctxBonus = if (hasCtx) {
-                            TaskHitboxBridge.getWordContextBoost(prevWord2, prevWord1, fWord, isPt) * 0.38f
+                            TaskHitboxBridge.getWordContextBoost(prevWord2, prevWord1, foldedBytes, fStart, fLen, isPt) * 0.38f
                         } else 0f
 
                         val energy = baseCost + 0.48f * orderedMiss + 0.28f * cornerMiss - freqBonus - ctxBonus
@@ -732,6 +773,13 @@ object TaskGlideDecoder {
                         val rawScore = (1_000_000f * exp(-0.85f * max(0f, energy + 0.40f)))
                             .toInt().coerceIn(50_000, 1_000_000)
                         val weightedScore = (rawScore * weight).toInt().coerceAtLeast(10_000)
+
+                        if (topCount == MAX_CANDIDATES && weightedScore <= topScores[MAX_CANDIDATES - 1]) {
+                            continue
+                        }
+
+                        val origWord = lexicon.wordAt(wi)
+                        if (spec.isBlacklisted(origWord)) continue
 
                         topCount = insertTopCandidateLocked(
                             word = origWord,
@@ -773,7 +821,6 @@ object TaskGlideDecoder {
         dict: Dictionary,
         currentCount: Int
     ): Int {
-        // Deduplicate by exact word keeping higher score
         var existingIdx = -1
         for (i in 0 until currentCount) {
             if (topWords[i] == word) {
@@ -783,7 +830,6 @@ object TaskGlideDecoder {
         }
         if (existingIdx >= 0) {
             if (score <= topScores[existingIdx]) return currentCount
-            // Remove existing and re-insert sorted
             for (j in existingIdx until currentCount - 1) {
                 topWords[j] = topWords[j + 1]
                 topScores[j] = topScores[j + 1]
@@ -856,14 +902,14 @@ object TaskGlideDecoder {
         return found
     }
 
-    private fun foldStringAscii(text: String?): String {
+    private fun foldStringAsciiLocked(text: String?): String {
         if (text.isNullOrEmpty()) return ""
-        val sb = StringBuilder(text.length)
+        foldBuf.setLength(0)
         for (i in 0 until text.length) {
             val fc = foldCharAscii(text[i])
-            if (fc != '\u0000') sb.append(fc)
+            if (fc != '\u0000') foldBuf.append(fc)
         }
-        return sb.toString()
+        return foldBuf.toString()
     }
 
     private fun foldCharAscii(ch: Char): Char = when (ch) {

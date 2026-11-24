@@ -555,6 +555,23 @@ class KeyboardSwitcher private constructor() {
             setKeyboard(KeyboardElement.SYMBOLS_SHIFTED, KeyboardSwitchState.SYMBOLS_SHIFTED)
         }
 
+        private fun animateLayerTransition(view: View) {
+            view.animate().cancel()
+            if (helium314.keyboard.keyboard.internal.KeyPreviewChoreographer.isImeReduceMotionEnabled(view.context)) {
+                view.alpha = 1f
+                view.scaleY = 1f
+                return
+            }
+            view.alpha = 0.88f
+            view.scaleY = 0.985f
+            view.animate()
+                .alpha(1f)
+                .scaleY(1f)
+                .setDuration(120L)
+                .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.8f, 0.2f, 1.0f))
+                .start()
+        }
+
         override fun setEmojiKeyboard() {
             val inputView = inputView ?: return
             if (KeyboardState.SwitchActions.DEBUG_ACTION) {
@@ -573,6 +590,7 @@ class KeyboardSwitcher private constructor() {
                 latinIME.currentInputEditorInfo, latinIME.mKeyboardActionListener
             )
             inputView.emojiPalettesView.isGone = false
+            animateLayerTransition(inputView.emojiPalettesView)
         }
 
         override fun setClipboardKeyboard() {
@@ -594,6 +612,7 @@ class KeyboardSwitcher private constructor() {
                 latinIME.currentInputEditorInfo, latinIME.mKeyboardActionListener
             )
             inputView.clipboardHistoryView.isGone = false
+            animateLayerTransition(inputView.clipboardHistoryView)
         }
 
         override fun setNumpadKeyboard() {
@@ -667,6 +686,14 @@ class KeyboardSwitcher private constructor() {
             inputView.keyboardView.setKeyPreviewPopupEnabled(currentSettingsValues.mKeyPreviewPopupOn)
             inputView.keyboardView.updateShortcutKey(richImm.isShortcutImeReady)
             val subtypeChanged = (oldKeyboard == null) || newKeyboard.mId.subtype != oldKeyboard.mId.subtype
+            val elementFamilyChanged = oldKeyboard == null
+                || oldKeyboard.mId.element.isAlphabet != newKeyboard.mId.element.isAlphabet
+                || (oldKeyboard.mId.element.isNumberLayout != newKeyboard.mId.element.isNumberLayout)
+                || (oldKeyboard.mId.element == KeyboardElement.DPAD) != (newKeyboard.mId.element == KeyboardElement.DPAD)
+                || (oldKeyboard.mId.element == KeyboardElement.SYMBOLS_SHIFTED) != (newKeyboard.mId.element == KeyboardElement.SYMBOLS_SHIFTED)
+            if (elementFamilyChanged) {
+                animateLayerTransition(inputView.keyboardView)
+            }
             val languageOnSpacebarFormatType = LanguageOnSpacebarUtils.getLanguageOnSpacebarFormatType(newKeyboard.mId.subtype)
             val hasMultipleEnabledIMEsOrSubtypes = richImm.hasMultipleEnabledIMEsOrSubtypes(true)
             inputView.keyboardView.startDisplayLanguageOnSpacebar(subtypeChanged, languageOnSpacebarFormatType, hasMultipleEnabledIMEsOrSubtypes)

@@ -55,9 +55,9 @@ public class KeyDetector {
         return x + mCorrectionX;
     }
 
-    // TODO: Remove vertical correction.
+    // Avoid double-compensating Y when TaskHitboxBridge's unified vertical thumb parallax is active.
     public int getTouchY(final int y) {
-        return y + mCorrectionY;
+        return com.tal.task.TaskHitboxBridge.isDynamicTouchActive() ? y : (y + mCorrectionY);
     }
 
     public Keyboard getKeyboard() {

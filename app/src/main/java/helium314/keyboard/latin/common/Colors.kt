@@ -271,7 +271,7 @@ class DynamicColors(context: Context, override val themeStyle: String, override 
         actionKeyIconColorFilter = when {
             themeStyle == STYLE_HOLO -> keyTextFilter
             // the white icon may not have enough contrast, and can't be adjusted by the user
-            isBrightColor(accent) -> colorFilter(Color.DKGRAY)
+            isBrightColor(accent) -> colorFilter(Color.rgb(8, 8, 8))
             else -> null
         }
     }
@@ -470,7 +470,7 @@ class DefaultColors (
         actionKeyIconColorFilter = when {
             themeStyle == STYLE_HOLO -> keyTextFilter
             // the white icon may not have enough contrast, and can't be adjusted by the user
-            isBrightColor(accent) -> colorFilter(Color.DKGRAY)
+            isBrightColor(accent) -> colorFilter(Color.rgb(8, 8, 8))
             else -> null
         }
     }

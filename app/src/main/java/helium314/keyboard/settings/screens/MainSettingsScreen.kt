@@ -84,9 +84,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
 import com.tal.task.TaskHitboxBridge
+import helium314.keyboard.keyboard.KeyboardSwitcher
 import helium314.keyboard.latin.R
 import helium314.keyboard.latin.settings.Defaults
 import helium314.keyboard.latin.settings.Settings
+import helium314.keyboard.latin.settings.createPrefKeyForBooleanSettings
 import helium314.keyboard.latin.utils.JniUtils
 import helium314.keyboard.latin.utils.NextScreenIcon
 import helium314.keyboard.latin.utils.SubtypeLocaleUtils.displayName
@@ -99,6 +101,7 @@ import helium314.keyboard.latin.utils.prefs
 import helium314.keyboard.latin.utils.previewDark
 import helium314.keyboard.settings.initPreview
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private enum class TaskSettingsLayer(val label: String) {
@@ -146,7 +149,6 @@ fun MainSettingsScreen(
     onClickPreferences: () -> Unit,
     onClickToolbar: () -> Unit,
     onClickGestureTyping: () -> Unit,
-    onClickDataGathering: () -> Unit,
     onClickAdvanced: () -> Unit,
     onClickAppearance: () -> Unit,
     onClickLanguage: () -> Unit,
@@ -179,6 +181,18 @@ fun MainSettingsScreen(
             prefs.getBoolean(Settings.PREF_AUTO_SHOW_TOOLBAR, Defaults.PREF_AUTO_SHOW_TOOLBAR) &&
                 prefs.getBoolean(Settings.PREF_AUTO_HIDE_TOOLBAR, Defaults.PREF_AUTO_HIDE_TOOLBAR)
         )
+    }
+    var showBottomPunctuationPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, Defaults.PREF_SHOW_BOTTOM_PUNCTUATION))
+    }
+    var showHintsPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_SHOW_HINTS, Defaults.PREF_SHOW_HINTS))
+    }
+    var popupOnPref by remember(refreshTick) {
+        mutableStateOf(prefs.getBoolean(Settings.PREF_POPUP_ON, Defaults.PREF_POPUP_ON))
+    }
+    var keyboardHeightScale by remember(refreshTick) {
+        mutableStateOf(Settings.readHeightScale(prefs, false, false))
     }
 
     val telemetry = remember(refreshTick, testInput) {
@@ -316,7 +330,7 @@ fun MainSettingsScreen(
                                 }
                             }
 
-                            // 2. Apple/iPhone Dynamic Tap Zones & Ergonomics Controls
+                            // 2. Apple/iPhone Dynamic Tap Zones & Ergonomics Controls (runs 100% invisible on real keyboard per D13)
                             TalSectionCard(title = "PRECISÃO ESTILO IPHONE") {
                                 Column(
                                     modifier = Modifier
@@ -324,24 +338,6 @@ fun MainSettingsScreen(
                                         .padding(GridInset),
                                     verticalArrangement = Arrangement.spacedBy(GridInset)
                                 ) {
-                                    Text(
-                                        text = "Visualizador de Dynamic Tap Zones",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    TalAppleSegmentedControl(
-                                        labels = TaskHitboxBridge.VisualizerMode.entries.map { it.label },
-                                        selectedIndex = telemetry.visualizerMode.ordinal,
-                                        onSelect = { idx ->
-                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                            TaskHitboxBridge.setVisualizerMode(
-                                                context,
-                                                TaskHitboxBridge.VisualizerMode.entries[idx]
-                                            )
-                                            refreshTick++
-                                        }
-                                    )
-
                                     Text(
                                         text = "Amplitude de adaptação das zonas",
                                         style = MaterialTheme.typography.titleSmall,
@@ -463,7 +459,7 @@ fun MainSettingsScreen(
                                 TalRowDivider()
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_appearance),
-                                    subtitle = "T.A.L. Dark / Light · altura 1.06x · bordas",
+                                    subtitle = "T.A.L. Dark / Light · altura ${"%.2f".format(keyboardHeightScale)}x · bordas",
                                     iconRes = R.drawable.ic_settings_appearance,
                                     onClick = onClickAppearance
                                 )
@@ -485,6 +481,84 @@ fun MainSettingsScreen(
                         }
 
                         TaskSettingsLayer.ADVANCED -> {
+                            TalSectionCard(title = "FILEIRA INFERIOR & TECLAS (PADRÃO IOS)") {
+                                TalSwitchRow(
+                                    title = "Mostrar vírgula e ponto ao lado do Espaço",
+                                    subtitle = "Restaura ',' e '.' dedicados na fileira inferior (padrão desligado = barra limpa estilo iOS)",
+                                    checked = showBottomPunctuationPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        showBottomPunctuationPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, enabled) }
+                                        KeyboardSwitcher.getInstance().setThemeNeedsReload()
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                TalSwitchRow(
+                                    title = "Mostrar dicas secundárias nas teclas",
+                                    subtitle = "Exibe números e símbolos discretos no canto superior das letras",
+                                    checked = showHintsPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        showHintsPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_SHOW_HINTS, enabled) }
+                                        KeyboardSwitcher.getInstance().setThemeNeedsReload()
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                TalSwitchRow(
+                                    title = "Ampliação da tecla ao tocar (Popup iOS)",
+                                    subtitle = "Mostra extensão elevada com mola analítica acima do polegar",
+                                    checked = popupOnPref,
+                                    onCheckedChange = { enabled ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        popupOnPref = enabled
+                                        prefs.edit { putBoolean(Settings.PREF_POPUP_ON, enabled) }
+                                        KeyboardSwitcher.getInstance().setThemeNeedsReload()
+                                        refreshTick++
+                                    }
+                                )
+                                TalRowDivider()
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    Text(
+                                        text = "Altura física do teclado",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    val heightValues = remember { listOf(0.94f, 1.00f, 1.06f, 1.12f) }
+                                    val heightLabels = remember { listOf("0.94x", "1.00x", "1.06x", "1.12x") }
+                                    val selectedHeightIdx = remember(keyboardHeightScale) {
+                                        heightValues.indices.minByOrNull { abs(heightValues[it] - keyboardHeightScale) } ?: 2
+                                    }
+                                    TalAppleSegmentedControl(
+                                        labels = heightLabels,
+                                        selectedIndex = selectedHeightIdx,
+                                        onSelect = { idx ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            val target = heightValues[idx]
+                                            keyboardHeightScale = target
+                                            prefs.edit {
+                                                for (i in 0 until 4) {
+                                                    putFloat(
+                                                        createPrefKeyForBooleanSettings(Settings.PREF_KEYBOARD_HEIGHT_SCALE_PREFIX, i, 2),
+                                                        target
+                                                    )
+                                                }
+                                            }
+                                            KeyboardSwitcher.getInstance().setThemeNeedsReload()
+                                            refreshTick++
+                                        }
+                                    )
+                                }
+                            }
+
                             TalSectionCard(title = "ERGONOMIA, LAYOUT E BARRA") {
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_preferences),
@@ -527,7 +601,7 @@ fun MainSettingsScreen(
                                 TalRowDivider()
                                 TalSettingRow(
                                     title = stringResource(R.string.settings_screen_about),
-                                    subtitle = "T.A.S.K. v3.1.0 · Totally Accurate Labs (GPL-3.0)",
+                                    subtitle = "T.A.S.K. v3.2.0 · Totally Accurate Labs (GPL-3.0)",
                                     iconRes = R.drawable.ic_settings_about,
                                     onClick = onClickAbout
                                 )
@@ -535,6 +609,33 @@ fun MainSettingsScreen(
                         }
 
                         TaskSettingsLayer.ENGINEERING -> {
+                            TalSectionCard(title = "VISUALIZADOR DE ZONAS 2D (DEBUG)") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    Text(
+                                        text = "Modo do overlay sobre o teclado (padrão OFF = invisível)",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    TalAppleSegmentedControl(
+                                        labels = TaskHitboxBridge.VisualizerMode.entries.map { it.label },
+                                        selectedIndex = telemetry.visualizerMode.ordinal,
+                                        onSelect = { idx ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            TaskHitboxBridge.setVisualizerMode(
+                                                context,
+                                                TaskHitboxBridge.VisualizerMode.entries[idx]
+                                            )
+                                            refreshTick++
+                                        }
+                                    )
+                                }
+                            }
+
                             TalSectionCard(title = "TELEMETRIA DE TOQUE (META <= 2.00 ms)") {
                                 Column(
                                     modifier = Modifier
@@ -649,6 +750,8 @@ fun MainSettingsScreen(
                                     TalMetricRow("Busca de emojis", "PT-BR + EN-US offline")
                                     TalMetricRow("RAM Trie (Flat-Int)", "${telemetry.estimatedTrieRamKb} KB")
                                     TalMetricRow("Permissão INTERNET", "AUSENTE (0)")
+                                    TalMetricRow("Permissão READ_CONTACTS", "AUSENTE (0)")
+                                    TalMetricRow("Lexicon Glide", "Packed ByteArray (0 String[])")
                                     TalMetricRow("Dicionários S23", "PT-BR 169k · EN-US 129k")
                                     TalMetricRow("Armazenamento local", "Apenas floats dx/dy")
                                     TalMetricRow("Campos sensíveis", "Estático · zero gravação")
@@ -752,7 +855,7 @@ private fun TalSettingRow(
                 fontFamily = TalSpaceGrotesk,
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
-                lineHeight = 22.sp,
+                lineHeight = 24.sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -920,7 +1023,7 @@ private fun PreviewScreen() {
     initPreview(LocalContext.current)
     Theme(previewDark) {
         Surface {
-            MainSettingsScreen({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+            MainSettingsScreen({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
         }
     }
 }

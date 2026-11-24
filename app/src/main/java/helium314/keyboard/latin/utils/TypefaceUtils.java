@@ -13,6 +13,7 @@ import android.util.SparseArray;
 
 public final class TypefaceUtils {
     private static final char[] KEY_LABEL_REFERENCE_CHAR = { 'M' };
+    private static final char[] KEY_LOWERCASE_REFERENCE_CHAR = { 'x' };
     private static final char[] KEY_NUMERIC_HINT_LABEL_REFERENCE_CHAR = { '8' };
 
     private TypefaceUtils() {
@@ -60,22 +61,18 @@ public final class TypefaceUtils {
     }
 
     private static int getCharGeometryCacheKey(final char referenceChar, final Paint paint) {
-        final int labelSize = (int)paint.getTextSize();
-        final Typeface face = paint.getTypeface();
-        final int codePointOffset = referenceChar << 15;
-        if (face == Typeface.DEFAULT) {
-            return codePointOffset + labelSize;
-        } else if (face == Typeface.DEFAULT_BOLD) {
-            return codePointOffset + labelSize + 0x1000;
-        } else if (face == Typeface.MONOSPACE) {
-            return codePointOffset + labelSize + 0x2000;
-        } else {
-            return codePointOffset + labelSize;
-        }
+        int result = referenceChar;
+        result = 31 * result + Float.floatToIntBits(paint.getTextSize());
+        result = 31 * result + java.util.Objects.hashCode(paint.getTypeface());
+        return result;
     }
 
     public static float getReferenceCharHeight(final Paint paint) {
         return getCharHeight(KEY_LABEL_REFERENCE_CHAR, paint);
+    }
+
+    public static float getLowercaseReferenceCharHeight(final Paint paint) {
+        return getCharHeight(KEY_LOWERCASE_REFERENCE_CHAR, paint);
     }
 
     public static float getReferenceCharWidth(final Paint paint) {

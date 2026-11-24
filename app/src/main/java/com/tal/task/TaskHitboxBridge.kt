@@ -10,12 +10,15 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
 import android.text.InputType
+import android.util.TypedValue
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import androidx.core.content.res.ResourcesCompat
 import helium314.keyboard.keyboard.Key
 import helium314.keyboard.keyboard.Keyboard
+import helium314.keyboard.keyboard.internal.keyboard_parser.floris.KeyCode
 import helium314.keyboard.latin.R
+import helium314.keyboard.latin.common.Constants
 import helium314.keyboard.latin.settings.Defaults
 import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.utils.prefs
@@ -435,7 +438,7 @@ object TaskHitboxBridge {
     @Volatile private var loadingPt = false
     @Volatile private var loadingEn = false
 
-    @Volatile private var visualizerMode: VisualizerMode = VisualizerMode.OVERLAY
+    @Volatile private var visualizerMode: VisualizerMode = VisualizerMode.OFF
     @Volatile private var sensitivity: Sensitivity = Sensitivity.STANDARD
     @Volatile private var adaptiveThumbEnabled: Boolean = true
     @Volatile private var activeLocaleIsPt = true
@@ -455,12 +458,17 @@ object TaskHitboxBridge {
     private var contextWordCount = 0
     private var lastBeforePrefixHash = 0L
     private var lastBeforePrefixLen = -1
+    private var lastTopicWordCount = 0
+    private var lastTopicBeforeLen = -1
+    private var lastTopicFoldedTail = ""
     private val foldedPrefixBuf = CharArray(64)
     private var foldedPrefixLen = 0
     private val foldScratch = CharArray(64)
     private val trigramKeyBuilder = StringBuilder(64)
     private val topicWords = HashMap<String, Int>(64)
     private val topicBigrams = HashMap<String, HashMap<String, Int>>(64)
+    private val topicWordHashes = HashMap<Long, Int>(64)
+    private val topicBigramHashes = HashMap<Long, HashMap<Long, Int>>(64)
     private val recentWordBounds = IntArray(244) // pairs (start, end) up to 122 words, zero allocation!
 
     // Per-row adaptive thumb offset (normalized floats dx/dy, NEVER stores text)
@@ -497,7 +505,7 @@ object TaskHitboxBridge {
     private val rawZoneTop = FloatArray(26)
     private val rawZoneBottom = FloatArray(26)
 
-    // Telemetry & touch jitter guard
+    // Telemetry, touch jitter guard & deferred commit state (EMA only mutates on real letter commit!)
     private val latencyRing = DoubleArray(100)
     private var ringIdx = 0
     private var ringCount = 0
@@ -517,10 +525,30 @@ object TaskHitboxBridge {
     @Volatile private var lastWasRescued = false
     @Volatile private var lastProtectedByCore = false
     @Volatile private var lastTouchTimeMs = 0L
-    @Volatile private var lastLoggedTouchMs = 0L
-    @Volatile private var lastLoggedKeyCode = Int.MIN_VALUE
     @Volatile private var lastLatencyMs = 0.0
     @Volatile private var lastOffsetYPx = 0f
+
+    @Volatile private var pendingValid = false
+    @Volatile private var pendingRawX = -1f
+    @Volatile private var pendingRawY = -1f
+    @Volatile private var pendingAdjX = -1f
+    @Volatile private var pendingAdjY = -1f
+    @Volatile private var pendingGeoChar: Char = '-'
+    @Volatile private var pendingResChar: Char = '-'
+    @Volatile private var pendingResCode: Int = Int.MIN_VALUE
+    @Volatile private var pendingResCx = -1f
+    @Volatile private var pendingResCy = -1f
+    @Volatile private var pendingResProb = 0f
+    @Volatile private var pendingResRow = 0
+    @Volatile private var pendingKeyW = 1f
+    @Volatile private var pendingKeyH = 1f
+    @Volatile private var pendingRescued = false
+    @Volatile private var pendingInCore = false
+    @Volatile private var pendingLatencyMs = 0.0
+    @Volatile private var pendingTimeMs = 0L
+
+    private var cachedHudText = ""
+    private var cachedHudStamp = Long.MIN_VALUE
 
     // Pre-allocated drawing objects (zero allocation in onDraw)
     private val tempRect = RectF()
@@ -546,7 +574,7 @@ object TaskHitboxBridge {
         if (!prefsLoaded) {
             prefsLoaded = true
             val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            visualizerMode = VisualizerMode.entries.getOrElse(prefs.getInt(KEY_VIZ_MODE, VisualizerMode.OVERLAY.ordinal)) { VisualizerMode.OVERLAY }
+            visualizerMode = VisualizerMode.entries.getOrElse(prefs.getInt(KEY_VIZ_MODE, VisualizerMode.OFF.ordinal)) { VisualizerMode.OFF }
             sensitivity = Sensitivity.entries.getOrElse(prefs.getInt(KEY_SENSITIVITY, Sensitivity.STANDARD.ordinal)) { Sensitivity.STANDARD }
             adaptiveThumbEnabled = prefs.getBoolean(KEY_ADAPTIVE, true)
             calibrationSamples = prefs.getInt(KEY_SAMPLES, 0)
@@ -593,6 +621,9 @@ object TaskHitboxBridge {
             }
         }
     }
+
+    @JvmStatic
+    fun isDynamicTouchActive(): Boolean = dynamicAllowedForField && !inGestureStroke
 
     @JvmStatic
     fun setInGesture(active: Boolean) {
@@ -703,12 +734,15 @@ object TaskHitboxBridge {
         ringIdx = 0
         ringCount = 0
         lastLatencyMs = 0.0
+        pendingValid = false
+        lastResolvedKeyCode = Int.MIN_VALUE
+        lastWasRescued = false
+        cachedHudStamp = Long.MIN_VALUE
     }
 
     @JvmStatic
     fun onKeyCommitted() {
-        lastLoggedKeyCode = Int.MIN_VALUE
-        lastLoggedTouchMs = 0L
+        // Pending calibration is promoted exclusively via onTapCommitted() on ACTION_UP / confirmed input.
     }
 
     /**
@@ -727,14 +761,21 @@ object TaskHitboxBridge {
     @JvmStatic
     fun onWindowHidden() {
         inGestureStroke = false
+        pendingValid = false
         synchronized(stateLock) {
             displayZonesPrimed = false
             lastDrawAnimUptimeMs = 0L
             topicWords.clear()
             topicBigrams.clear()
+            topicWordHashes.clear()
+            topicBigramHashes.clear()
             lastBeforePrefixHash = 0L
             lastBeforePrefixLen = -1
+            lastTopicWordCount = 0
+            lastTopicBeforeLen = -1
+            lastTopicFoldedTail = ""
             contextWordCount = 0
+            cachedHudStamp = Long.MIN_VALUE
         }
     }
 
@@ -752,8 +793,13 @@ object TaskHitboxBridge {
             synchronized(stateLock) {
                 topicWords.clear()
                 topicBigrams.clear()
+                topicWordHashes.clear()
+                topicBigramHashes.clear()
                 lastBeforePrefixHash = 0L
                 lastBeforePrefixLen = -1
+                lastTopicWordCount = 0
+                lastTopicBeforeLen = -1
+                lastTopicFoldedTail = ""
             }
         }
     }
@@ -810,10 +856,17 @@ object TaskHitboxBridge {
             contextWordCount = 0
             lastBeforePrefixHash = 0L
             lastBeforePrefixLen = -1
+            lastTopicWordCount = 0
+            lastTopicBeforeLen = -1
+            lastTopicFoldedTail = ""
             topicWords.clear()
             topicBigrams.clear()
+            topicWordHashes.clear()
+            topicBigramHashes.clear()
             dynamicAllowedForField = fieldBaseDynamicAllowed
-            lastLoggedKeyCode = Int.MIN_VALUE
+            pendingValid = false
+            pendingResCode = Int.MIN_VALUE
+            cachedHudStamp = Long.MIN_VALUE
             displayZonesPrimed = false
             recomputeProbabilitiesLocked()
         }
@@ -946,25 +999,64 @@ object TaskHitboxBridge {
                     foldSubstringToString(cs, recentWordBounds[(wordCount - 2) * 2], recentWordBounds[(wordCount - 2) * 2 + 1])
                 } else ""
 
-                topicWords.clear()
-                topicBigrams.clear()
-                if (learningAllowedForField && dynamicAllowedForField && wordCount > 0) {
-                    var prevFolded: String? = null
-                    for (w in 0 until wordCount) {
-                        val ws = recentWordBounds[w * 2]
-                        val we = recentWordBounds[w * 2 + 1]
-                        val folded = foldSubstringToString(cs, ws, we)
-                        if (folded.length >= 2) {
-                            topicWords[folded] = (topicWords[folded] ?: 0) + 1
-                            if (prevFolded != null) {
-                                val map = topicBigrams.getOrPut(prevFolded) { HashMap(4) }
-                                map[folded] = (map[folded] ?: 0) + 1
+                if (!learningAllowedForField || !dynamicAllowedForField || wordCount == 0) {
+                    topicWords.clear()
+                    topicBigrams.clear()
+                    topicWordHashes.clear()
+                    topicBigramHashes.clear()
+                    lastTopicWordCount = 0
+                    lastTopicBeforeLen = if (wordCount == 0) beforePrefixLen else -1
+                    lastTopicFoldedTail = prevWord1
+                } else {
+                    val canIncremental = wordCount == lastTopicWordCount + 1 &&
+                        totalLen <= 512 &&
+                        lastTopicBeforeLen in 0 until beforePrefixLen &&
+                        (wordCount < 2 || prevWord2 == lastTopicFoldedTail)
+                    if (canIncremental) {
+                        if (prevWord1.length >= 2) {
+                            topicWords[prevWord1] = (topicWords[prevWord1] ?: 0) + 1
+                            val h1 = fnv1aString(prevWord1)
+                            topicWordHashes[h1] = (topicWordHashes[h1] ?: 0) + 1
+                            if (prevWord2.isNotEmpty()) {
+                                val map = topicBigrams.getOrPut(prevWord2) { HashMap(4) }
+                                map[prevWord1] = (map[prevWord1] ?: 0) + 1
+                                val h2 = fnv1aString(prevWord2)
+                                val hMap = topicBigramHashes.getOrPut(h2) { HashMap(4) }
+                                hMap[h1] = (hMap[h1] ?: 0) + 1
                             }
-                            prevFolded = folded
-                        } else if (folded.isNotEmpty()) {
-                            prevFolded = folded
+                        }
+                    } else {
+                        topicWords.clear()
+                        topicBigrams.clear()
+                        topicWordHashes.clear()
+                        topicBigramHashes.clear()
+                        var prevFolded: String? = null
+                        var prevHash = 0L
+                        for (w in 0 until wordCount) {
+                            val ws = recentWordBounds[w * 2]
+                            val we = recentWordBounds[w * 2 + 1]
+                            val folded = foldSubstringToString(cs, ws, we)
+                            if (folded.length >= 2) {
+                                val h1 = fnv1aString(folded)
+                                topicWords[folded] = (topicWords[folded] ?: 0) + 1
+                                topicWordHashes[h1] = (topicWordHashes[h1] ?: 0) + 1
+                                if (prevFolded != null) {
+                                    val map = topicBigrams.getOrPut(prevFolded) { HashMap(4) }
+                                    map[folded] = (map[folded] ?: 0) + 1
+                                    val hMap = topicBigramHashes.getOrPut(prevHash) { HashMap(4) }
+                                    hMap[h1] = (hMap[h1] ?: 0) + 1
+                                }
+                                prevFolded = folded
+                                prevHash = h1
+                            } else if (folded.isNotEmpty()) {
+                                prevFolded = folded
+                                prevHash = fnv1aString(folded)
+                            }
                         }
                     }
+                    lastTopicWordCount = wordCount
+                    lastTopicBeforeLen = beforePrefixLen
+                    lastTopicFoldedTail = prevWord1
                 }
             }
 
@@ -1259,6 +1351,93 @@ object TaskHitboxBridge {
     }
 
     /**
+     * Zero-Allocation Byte-Slice overload for packed GlideLexicon candidates.
+     * Queries pre-computed 64-bit FNV-1a topic/bigram hash tables without creating String instances.
+     */
+    @JvmStatic
+    fun getWordContextBoost(
+        prevWord2: String?,
+        prevWord1: String?,
+        foldedBytes: ByteArray,
+        fStart: Int,
+        fLen: Int,
+        isPt: Boolean
+    ): Float {
+        if (fLen <= 0) return 0f
+        val p1 = foldWordThreadSafe(prevWord1)
+        val p2 = foldWordThreadSafe(prevWord2)
+        var boost = 0f
+
+        val triMap = if (isPt) ptTrigrams else enTrigrams
+        val biMap = if (isPt) ptBigrams else enBigrams
+
+        if (p2.isNotEmpty() && p1.isNotEmpty()) {
+            val triTargets = triMap["$p2 $p1"]
+            if (triTargets != null) {
+                for (i in triTargets.indices) {
+                    if (equalsAsciiBytes(triTargets[i].first, foldedBytes, fStart, fLen)) {
+                        boost += triTargets[i].second * 0.90f
+                        break
+                    }
+                }
+            }
+        }
+        if (p1.isNotEmpty()) {
+            val biTargets = biMap[p1]
+            if (biTargets != null) {
+                for (i in biTargets.indices) {
+                    if (equalsAsciiBytes(biTargets[i].first, foldedBytes, fStart, fLen)) {
+                        boost += biTargets[i].second * 0.65f
+                        break
+                    }
+                }
+            }
+        }
+
+        if (learningAllowedForField && dynamicAllowedForField) {
+            val foldedHash = fnv1aBytes(foldedBytes, fStart, fLen)
+            val p1Hash = if (p1.isNotEmpty()) fnv1aString(p1) else 0L
+            synchronized(stateLock) {
+                if (p1Hash != 0L) {
+                    val count = topicBigramHashes[p1Hash]?.get(foldedHash) ?: 0
+                    if (count > 0) {
+                        boost += (0.45f + count * 0.15f).coerceAtMost(0.85f)
+                    }
+                }
+                val topicCount = topicWordHashes[foldedHash] ?: 0
+                if (topicCount > 0) {
+                    boost += (0.15f + topicCount * 0.08f).coerceAtMost(0.45f)
+                }
+            }
+        }
+        return boost.coerceAtMost(1.5f)
+    }
+
+    private fun equalsAsciiBytes(s: String, bytes: ByteArray, offset: Int, len: Int): Boolean {
+        if (s.length != len) return false
+        for (i in 0 until len) {
+            if (s[i].code != (bytes[offset + i].toInt() and 0xFF)) return false
+        }
+        return true
+    }
+
+    private fun fnv1aString(s: String): Long {
+        var hash = -3750763034362895579L // 14695981039346656037UL as signed Long
+        for (i in 0 until s.length) {
+            hash = (hash xor s[i].code.toLong()) * 1099511628211L
+        }
+        return hash
+    }
+
+    private fun fnv1aBytes(bytes: ByteArray, offset: Int, len: Int): Long {
+        var hash = -3750763034362895579L
+        for (i in 0 until len) {
+            hash = (hash xor (bytes[offset + i].toInt() and 0xFF).toLong()) * 1099511628211L
+        }
+        return hash
+    }
+
+    /**
      * Offline next-word predictions (up to 3) from trigrams -> bigrams -> ephemeral topic cache,
      * with Portuguese accents restored on common words. Respects sensitive/no-learning fields.
      */
@@ -1535,14 +1714,30 @@ object TaskHitboxBridge {
         if (keyboard == null || geometricKey == null || !dynamicAllowedForField || inGestureStroke) {
             return geometricKey
         }
-        val geoChar = toAlphaChar(geometricKey.code) ?: return geometricKey
+        val geoAlpha = toAlphaChar(geometricKey.code)
+        val isSpaceCandidate = geometricKey.code == Constants.CODE_SPACE
+        val isDeleteCandidate = geometricKey.code == KeyCode.DELETE
+        if (geoAlpha == null && !isSpaceCandidate && !isDeleteCandidate) {
+            return geometricKey
+        }
+        if ((isSpaceCandidate || isDeleteCandidate) && foldedPrefixLen < 1) {
+            return geometricKey
+        }
+        val gHb = geometricKey.hitBox
+        if (isSpaceCandidate && touchY > gHb.top + gHb.height() * 0.18f) {
+            return geometricKey
+        }
+        if (isDeleteCandidate && touchX > gHb.left + gHb.width() * 0.15f) {
+            return geometricKey
+        }
+
         val t0 = System.nanoTime()
         val density = appContextRef?.resources?.displayMetrics?.density ?: 3f
+        val geoChar = geoAlpha ?: if (isSpaceCandidate) '_' else '<'
 
         val resolvedIdx: Int
         val adjX: Float
         val adjY: Float
-        val row: Int
         val resolvedProb: Float
         val resolvedKey: Key
 
@@ -1550,10 +1745,9 @@ object TaskHitboxBridge {
             ensureZonesBuiltLocked(keyboard, density)
             if (zoneCount == 0) return geometricKey
 
-            val hb = geometricKey.hitBox
-            val keyW = hb.width().toFloat().coerceAtLeast(1f)
-            val keyH = hb.height().toFloat().coerceAtLeast(1f)
-            row = estimateRow(keyboard, hb.exactCenterY())
+            val keyW = gHb.width().toFloat().coerceAtLeast(1f)
+            val keyH = gHb.height().toFloat().coerceAtLeast(1f)
+            val row = estimateRow(keyboard, gHb.exactCenterY())
 
             val biasXRatio = if (adaptiveThumbEnabled) rowBiasX[row] else 0f
             val biasYRatio = if (adaptiveThumbEnabled) rowBiasY[row] else BASE_VERTICAL_BIAS_RATIO
@@ -1561,45 +1755,83 @@ object TaskHitboxBridge {
             adjY = touchY - biasYRatio * keyH
             lastOffsetYPx = -(biasYRatio * keyH)
 
-            // B1.Q4: Reject accidental curved-edge palm touches strictly in the outer 4 dp bezel
-            if (geometricKey === zoneKeys[0] && adjX < targetZones[0].left - 2f * density &&
-                hb.left <= (8f * density)
-            ) {
-                return null
-            }
-
-            var matchIdx = -1
-            for (i in 0 until zoneCount) {
-                if (targetZones[i].contains(adjX, adjY)) {
-                    matchIdx = i
-                    break
-                }
-            }
-            if (matchIdx == -1) {
-                var bestDist = Float.MAX_VALUE
-                for (i in 0 until zoneCount) {
-                    val r = targetZones[i]
-                    val cx = adjX.coerceIn(r.left, r.right)
-                    val cy = adjY.coerceIn(r.top, r.bottom)
-                    val d = hypot(adjX - cx, adjY - cy)
-                    if (d < bestDist) {
-                        bestDist = d
-                        matchIdx = i
+            if (isSpaceCandidate || isDeleteCandidate) {
+                var neighborIdx = -1
+                if (isSpaceCandidate) {
+                    var bestDist = Float.MAX_VALUE
+                    for (i in 0 until zoneCount) {
+                        val rHb = zoneKeys[i]?.hitBox ?: continue
+                        val verticalGap = gHb.top - rHb.exactCenterY()
+                        if (verticalGap <= 0f || verticalGap > keyH * 1.5f) continue
+                        val dx = abs(adjX - rHb.exactCenterX())
+                        if (dx <= rHb.width() * 0.85f && dx < bestDist) {
+                            bestDist = dx
+                            neighborIdx = i
+                        }
+                    }
+                } else {
+                    var bestRight = Float.MIN_VALUE
+                    for (i in 0 until zoneCount) {
+                        val rHb = zoneKeys[i]?.hitBox ?: continue
+                        if (abs(rHb.exactCenterY() - gHb.exactCenterY()) > keyH * 0.65f) continue
+                        if (rHb.exactCenterX() >= gHb.left) continue
+                        if (rHb.exactCenterX() > bestRight) {
+                            bestRight = rHb.exactCenterX()
+                            neighborIdx = i
+                        }
+                    }
+                    if (neighborIdx >= 0) {
+                        val nHb = zoneKeys[neighborIdx]!!.hitBox
+                        if (adjX - nHb.right > nHb.width() * 0.75f) neighborIdx = -1
                     }
                 }
-            }
-            if (matchIdx == -1) return geometricKey
+                if (neighborIdx < 0) return geometricKey
+                val prob = charProbs[zoneCharIdx[neighborIdx]]
+                if (prob < 0.18f) return geometricKey
+                resolvedIdx = neighborIdx
+                resolvedKey = zoneKeys[neighborIdx] ?: return geometricKey
+                resolvedProb = prob
+            } else {
+                // B1.Q4: Reject accidental curved-edge palm touches strictly in the outer 4 dp bezel
+                if (geometricKey === zoneKeys[0] && adjX < targetZones[0].left - 2f * density &&
+                    gHb.left <= (8f * density)
+                ) {
+                    return null
+                }
 
-            resolvedIdx = matchIdx
-            resolvedKey = zoneKeys[matchIdx] ?: return geometricKey
-            resolvedProb = charProbs[zoneCharIdx[matchIdx]]
+                var matchIdx = -1
+                for (i in 0 until zoneCount) {
+                    if (targetZones[i].contains(adjX, adjY)) {
+                        matchIdx = i
+                        break
+                    }
+                }
+                if (matchIdx == -1) {
+                    var bestDist = Float.MAX_VALUE
+                    for (i in 0 until zoneCount) {
+                        val r = targetZones[i]
+                        val cx = adjX.coerceIn(r.left, r.right)
+                        val cy = adjY.coerceIn(r.top, r.bottom)
+                        val d = hypot(adjX - cx, adjY - cy)
+                        if (d < bestDist) {
+                            bestDist = d
+                            matchIdx = i
+                        }
+                    }
+                }
+                if (matchIdx == -1) return geometricKey
 
-            // B1.Q4 right-edge bezel palm check
-            val rHb = resolvedKey.hitBox
-            if (adjX > targetZones[matchIdx].right + 2f * density &&
-                rHb.right >= (keyboard.mOccupiedWidth - 8f * density)
-            ) {
-                return null
+                resolvedIdx = matchIdx
+                resolvedKey = zoneKeys[matchIdx] ?: return geometricKey
+                resolvedProb = charProbs[zoneCharIdx[matchIdx]]
+
+                // B1.Q4 right-edge bezel palm check
+                val rHb = resolvedKey.hitBox
+                if (adjX > targetZones[matchIdx].right + 2f * density &&
+                    rHb.right >= (keyboard.mOccupiedWidth - 8f * density)
+                ) {
+                    return null
+                }
             }
         }
 
@@ -1615,40 +1847,80 @@ object TaskHitboxBridge {
         val rescued = resolvedKey !== geometricKey
         val latencyMs = (System.nanoTime() - t0) / 1_000_000.0
         val nowMs = System.currentTimeMillis()
-        val isNewTap = (nowMs - lastLoggedTouchMs) >= TAP_LOG_DEBOUNCE_MS ||
-            resolvedKey.code != lastLoggedKeyCode
 
+        lastRawX = touchX.toFloat()
+        lastRawY = touchY.toFloat()
+        lastAdjX = adjX
+        lastAdjY = adjY
+        lastGeoChar = geoChar
+        lastResChar = resolvedChar
         lastResolvedKeyCode = resolvedKey.code
+        lastResolvedCenterX = cx
+        lastResolvedCenterY = cy
+        lastResolvedProb = resolvedProb
         lastWasRescued = rescued
+        lastProtectedByCore = !rescued && inCore
+        lastTouchTimeMs = nowMs
+        lastLatencyMs = latencyMs
 
-        if (isNewTap) {
-            lastLoggedTouchMs = nowMs
-            lastLoggedKeyCode = resolvedKey.code
-            if (rescued) rescuedCount++ else if (inCore) coreProtectedCount++
-            updateAdaptiveCalibration(
-                zoneRows[resolvedIdx],
-                touchX - cx,
-                touchY - cy,
-                rHb.width().toFloat().coerceAtLeast(1f),
-                rHb.height().toFloat().coerceAtLeast(1f)
-            )
-            recordTouch(
-                touchX.toFloat(), touchY.toFloat(), adjX, adjY,
-                geoChar, resolvedChar, cx, cy,
-                resolvedProb,
-                rescued = rescued,
-                protectedByCore = !rescued && inCore,
-                latencyMs = latencyMs,
-                nowMs = nowMs
-            )
-        } else {
-            lastRawX = touchX.toFloat()
-            lastRawY = touchY.toFloat()
-            lastAdjX = adjX
-            lastAdjY = adjY
-            lastTouchTimeMs = nowMs
-        }
+        pendingValid = true
+        pendingRawX = touchX.toFloat()
+        pendingRawY = touchY.toFloat()
+        pendingAdjX = adjX
+        pendingAdjY = adjY
+        pendingGeoChar = geoChar
+        pendingResChar = resolvedChar
+        pendingResCode = resolvedKey.code
+        pendingResCx = cx
+        pendingResCy = cy
+        pendingResProb = resolvedProb
+        pendingResRow = zoneRows[resolvedIdx]
+        pendingKeyW = rHb.width().toFloat().coerceAtLeast(1f)
+        pendingKeyH = rHb.height().toFloat().coerceAtLeast(1f)
+        pendingRescued = rescued
+        pendingInCore = !rescued && inCore
+        pendingLatencyMs = latencyMs
+        pendingTimeMs = nowMs
+
         return resolvedKey
+    }
+
+    /**
+     * Promotes pending ACTION_DOWN resolution into telemetry and adaptive thumb EMA calibration
+     * strictly upon confirmed key commit (ACTION_UP / confirmed repeat=false tap).
+     */
+    @JvmStatic
+    fun onTapCommitted(committedCode: Int) {
+        if (!pendingValid) return
+        val wasValid = pendingValid
+        pendingValid = false
+        if (!wasValid) return
+
+        val cAlpha = toAlphaChar(committedCode)
+        val pAlpha = toAlphaChar(pendingResCode)
+        val codeMatches = committedCode == pendingResCode ||
+            (cAlpha != null && pAlpha != null && cAlpha == pAlpha)
+        if (!codeMatches) return
+
+        if (pendingRescued) {
+            rescuedCount++
+        } else if (pendingInCore) {
+            coreProtectedCount++
+        }
+
+        updateAdaptiveCalibration(
+            pendingResRow,
+            pendingRawX - pendingResCx,
+            pendingRawY - pendingResCy,
+            pendingKeyW,
+            pendingKeyH
+        )
+        recordTouch(
+            pendingRawX, pendingRawY, pendingAdjX, pendingAdjY,
+            pendingGeoChar, pendingResChar, pendingResCx, pendingResCy,
+            pendingResProb, pendingRescued, pendingInCore,
+            pendingLatencyMs, pendingTimeMs
+        )
     }
 
     private fun estimateRow(keyboard: Keyboard, centerY: Float): Int {
@@ -1736,9 +2008,10 @@ object TaskHitboxBridge {
             offsetVectorPaint.pathEffect = DashPathEffect(floatArrayOf(2f * density, 2f * density), 0f)
             rescuePaint.strokeWidth = 2f * density
             monoPaint.typeface = mono
-            monoPaint.textSize = 9.5f * density
+            val sp12 = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f, context.resources.displayMetrics)
+            monoPaint.textSize = sp12
             hudTextPaint.typeface = mono
-            hudTextPaint.textSize = 10f * density
+            hudTextPaint.textSize = sp12
         }
 
         val isDark = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -1793,7 +2066,7 @@ object TaskHitboxBridge {
                     val pct = (charProbs[cIdx] * 100f).roundToInt()
                     if (pct >= 4) {
                         monoPaint.color = accentColor
-                        canvas.drawText("$pct%", d.centerX(), d.top + 11f * density, monoPaint)
+                        canvas.drawText("$pct%", d.centerX(), d.top + 13f * density, monoPaint)
                     }
                 }
             }
@@ -1821,17 +2094,45 @@ object TaskHitboxBridge {
         }
 
         if (mode == VisualizerMode.ENGINEERING) {
-            val tag = when {
-                lastWasRescued -> "RESCUED"
-                lastProtectedByCore -> "CORE"
-                else -> "EXACT"
+            val tagOrd = when {
+                lastWasRescued -> 2
+                lastProtectedByCore -> 1
+                else -> 0
             }
             val pct = (lastResolvedProb * 100f).roundToInt()
             val ctxW = contextWordCount
-            val hud = "T.A.S.K. ENG | ctx=${ctxW}w | $lastGeoChar->$lastResChar ($pct%) $tag | dy=${lastOffsetYPx.roundToInt()}px | ${"%.2f".format(lastLatencyMs)}ms"
+            val dyPx = lastOffsetYPx.roundToInt()
+            val hundredths = (lastLatencyMs * 100.0).roundToInt().coerceIn(0, 9999)
+            val stamp = (ctxW.toLong() shl 48) xor
+                (lastGeoChar.code.toLong() shl 40) xor
+                (lastResChar.code.toLong() shl 32) xor
+                (pct.toLong() shl 24) xor
+                (tagOrd.toLong() shl 20) xor
+                ((dyPx.toLong() and 0xFFL) shl 12) xor
+                hundredths.toLong()
+            if (stamp != cachedHudStamp) {
+                cachedHudStamp = stamp
+                val tag = when (tagOrd) {
+                    2 -> "RESCUED"
+                    1 -> "CORE"
+                    else -> "EXACT"
+                }
+                val latWhole = hundredths / 100
+                val latFrac = hundredths % 100
+                cachedHudText = buildString(72) {
+                    append("T.A.S.K. ENG | ctx=").append(ctxW).append("w | ")
+                    append(lastGeoChar).append("->").append(lastResChar)
+                    append(" (").append(pct).append("%) ").append(tag)
+                    append(" | dy=").append(dyPx).append("px | ")
+                    append(latWhole).append('.')
+                    if (latFrac < 10) append('0')
+                    append(latFrac).append("ms")
+                }
+            }
+            val hud = cachedHudText
             val textW = hudTextPaint.measureText(hud)
             val padX = 8f * density
-            val pillH = 18f * density
+            val pillH = 22f * density
             tempRect.set(6f * density, 2f * density, 6f * density + textW + padX * 2f, 2f * density + pillH)
             hudBgPaint.color = if (isDark) 0xDD080808.toInt() else 0xDDF2F2F0.toInt()
             canvas.drawRoundRect(tempRect, 6f * density, 6f * density, hudBgPaint)

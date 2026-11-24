@@ -29,6 +29,7 @@ import helium314.keyboard.keyboard.internal.PointerTrackerQueue;
 import helium314.keyboard.keyboard.internal.TimerProxy;
 import helium314.keyboard.keyboard.internal.TypingTimeRecorder;
 import helium314.keyboard.keyboard.internal.keyboard_parser.floris.KeyCode;
+import helium314.keyboard.latin.AudioAndHapticFeedbackManager;
 import helium314.keyboard.latin.R;
 import helium314.keyboard.latin.common.Constants;
 import helium314.keyboard.latin.common.CoordinateUtils;
@@ -330,6 +331,9 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
         // Even if the key is disabled, it should respond if it is in the altCodeWhileTyping state.
         if (key.isEnabled() || altersCode) {
             sTypingTimeRecorder.onCodeInput(code, eventTime);
+            if (!isKeyRepeat) {
+                com.tal.task.TaskHitboxBridge.onTapCommitted(code);
+            }
             if (code == KeyCode.MULTIPLE_CODE_POINTS) {
                 sListener.onTextInput(key.getOutputText());
             } else if (code != KeyCode.NOT_SPECIFIED) {
@@ -973,6 +977,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
                 } else if (oneShotSwipe(sv.mSpaceSwipeVertical)) return;
                 if (sListener.onVerticalSpaceSwipe(stepsY)) {
                     mStartY += stepsY * sPointerStep;
+                    AudioAndHapticFeedbackManager.getInstance().performHapticFeedback(null, HapticEvent.GESTURE_MOVE);
                 }
                 return;
             }
@@ -986,6 +991,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
                 } else if (oneShotSwipe(sv.mSpaceSwipeHorizontal)) return;
                 if (sListener.onHorizontalSpaceSwipe(stepsX)) {
                     mStartX += stepsX * sPointerStep;
+                    AudioAndHapticFeedbackManager.getInstance().performHapticFeedback(null, HapticEvent.GESTURE_MOVE);
                 }
             }
         } else if (code == KeyCode.DELETE) {
@@ -998,6 +1004,7 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
                 }
                 mStartX += steps * sPointerStep;
                 sListener.onMoveDeletePointer(steps);
+                AudioAndHapticFeedbackManager.getInstance().performHapticFeedback(null, HapticEvent.GESTURE_MOVE);
             }
         }
     }

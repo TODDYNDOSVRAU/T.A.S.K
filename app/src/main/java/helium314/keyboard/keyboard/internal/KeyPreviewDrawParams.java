@@ -69,6 +69,13 @@ public final class KeyPreviewDrawParams {
         setVisibleOffset(-previewTextView.getPaddingBottom() / 2);
     }
 
+    public void setDeterministicGeometry(final int previewWidth, final int previewHeight,
+            final int padLeft, final int padRight, final int padTop, final int padBottom) {
+        mVisibleWidth = Math.max(0, previewWidth - padLeft - padRight);
+        mVisibleHeight = Math.max(0, previewHeight - padTop - padBottom);
+        setVisibleOffset(-padBottom / 2);
+    }
+
     public int getVisibleWidth() {
         return mVisibleWidth;
     }

@@ -77,6 +77,7 @@ public class SettingsValues {
     public final boolean mShowTldPopupKeys;
     public final boolean mSpaceForLangChange;
     public final boolean mShowsEmojiKey;
+    public final boolean mShowsBottomPunctuation;
     public final boolean mShowsDpadKey;
     public final boolean mVarToolbarDirection;
     public final boolean mUsePersonalizedDicts;
@@ -214,6 +215,7 @@ public class SettingsValues {
         mShowTldPopupKeys = prefs.getBoolean(Settings.PREF_SHOW_TLD_POPUP_KEYS, Defaults.PREF_SHOW_TLD_POPUP_KEYS);
         mSpaceForLangChange = prefs.getBoolean(Settings.PREF_SPACE_TO_CHANGE_LANG, Defaults.PREF_SPACE_TO_CHANGE_LANG);
         mShowsEmojiKey = prefs.getBoolean(Settings.PREF_SHOW_EMOJI_KEY, Defaults.PREF_SHOW_EMOJI_KEY);
+        mShowsBottomPunctuation = prefs.getBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, Defaults.PREF_SHOW_BOTTOM_PUNCTUATION);
         mShowsDpadKey = prefs.getBoolean(Settings.PREF_SHOW_DPAD_KEY, Defaults.PREF_SHOW_DPAD_KEY);
         mVarToolbarDirection = mToolbarMode != ToolbarMode.HIDDEN && prefs.getBoolean(Settings.PREF_VARIABLE_TOOLBAR_DIRECTION, Defaults.PREF_VARIABLE_TOOLBAR_DIRECTION);
         mUsePersonalizedDicts = prefs.getBoolean(Settings.PREF_KEY_USE_PERSONALIZED_DICTS, Defaults.PREF_KEY_USE_PERSONALIZED_DICTS);
@@ -310,8 +312,8 @@ public class SettingsValues {
         mPopupKeyOrder = SubtypeUtilsKt.getPopupKeyOrder(selectedSubtype, prefs);
         mPopupKeyHintOrder = SubtypeUtilsKt.getPopupKeyHintOrder(selectedSubtype, prefs);
         mAddToPersonalDictionary = prefs.getBoolean(Settings.PREF_ADD_TO_PERSONAL_DICTIONARY, Defaults.PREF_ADD_TO_PERSONAL_DICTIONARY);
-        mUseContactsDictionary = SettingsValues.readUseContactsEnabled(prefs, context);
-        mUseAppsDictionary = prefs.getBoolean(Settings.PREF_USE_APPS, Defaults.PREF_USE_APPS);
+        mUseContactsDictionary = false;
+        mUseAppsDictionary = false;
         mCustomNavBarColor = prefs.getBoolean(Settings.PREF_NAVBAR_COLOR, Defaults.PREF_NAVBAR_COLOR);
         mKeyGapScale = Settings.readKeyGapScale(prefs, isLandscape, isFolded);
         mSettingsValuesForSuggestion = new SettingsValuesForSuggestion(
