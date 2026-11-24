@@ -1,0 +1,8 @@
+{
+  "id": "com.tal.task",
+  "name": "T.A.S.K.",
+  "author": "TODDYNDOSVRAU",
+  "url": "https://github.com/TODDYNDOSVRAU/T.A.S.K",
+  "apkFilterRegEx": "release\\.apk$",
+  "additionalSettings": "{\"includePrereleases\":false,\"fallbackToOlderReleases\":true,\"filterReleaseNotesByRegEx\":\"\",\"verifyLatestTag\":false,\"dontSortReleasesList\":false,\"useLatestAssetDateAsReleaseDate\":false,\"trackOnly\":false,\"versionExtractionRegEx\":\"\",\"matchGroupToUse\":\"\",\"versionDetection\":true,\"releaseDateAsVersion\":false,\"useVersionCodeAsOSVersion\":false,\"apkFilterRegEx\":\"release\\\\.apk$\",\"invertAPKfilter\":false,\"autoApkFilterByArch\":false,\"appName\":\"T.A.S.K.\",\"shizukuPretendToBeGooglePlay\":false,\"allowInsecure\":false,\"exemptFromBackgroundUpdates\":false,\"skipUpdateNotifications\":false,\"about\":\"Totally Accurate Smart Keyboard — 100% offline Android IME by T.A.L.\"}"
+}

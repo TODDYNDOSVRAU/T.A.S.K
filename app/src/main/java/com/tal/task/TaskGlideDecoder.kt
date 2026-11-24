@@ -59,12 +59,12 @@ object TaskGlideDecoder {
                 val foldedStream = ByteArrayOutputStream(160 * 1024)
                 val collapsedStream = ByteArrayOutputStream(144 * 1024)
 
-                val wordStarts = ArrayList<Int>(16000)
-                val foldedStarts = ArrayList<Int>(16000)
-                val collapsedStarts = ArrayList<Int>(16000)
+                val wordStarts = IntArrayList(16000)
+                val foldedStarts = IntArrayList(16000)
+                val collapsedStarts = IntArrayList(16000)
                 val firstChars = ByteArrayList(16000)
                 val lastChars = ByteArrayList(16000)
-                val logFreqList = ArrayList<Float>(16000)
+                val logFreqList = FloatArrayList(16000)
 
                 val bucketCounts = IntArray(676)
                 val foldBuf = ByteArray(48)
@@ -135,10 +135,10 @@ object TaskGlideDecoder {
                     bucketWordIdx[cursor[b]++] = i
                 }
 
-                val wordStartArr = IntArray(total + 1) { i -> wordStarts[i] }
-                val foldedStartArr = IntArray(total + 1) { i -> foldedStarts[i] }
-                val collapsedStartArr = IntArray(total + 1) { i -> collapsedStarts[i] }
-                val freqsArr = FloatArray(total) { i -> logFreqList[i] }
+                val wordStartArr = wordStarts.toIntArray()
+                val foldedStartArr = foldedStarts.toIntArray()
+                val collapsedStartArr = collapsedStarts.toIntArray()
+                val freqsArr = logFreqList.toFloatArray()
 
                 return GlideLexicon(
                     utf8Words = utf8Stream.toByteArray(),
@@ -179,6 +179,35 @@ object TaskGlideDecoder {
         }
 
         operator fun get(index: Int): Int = data[index].toInt() and 0xFF
+    }
+
+    private class IntArrayList(initialCapacity: Int) {
+        private var data = IntArray(initialCapacity)
+        private var size = 0
+
+        fun add(v: Int) {
+            if (size == data.size) {
+                data = data.copyOf(data.size * 2)
+            }
+            data[size++] = v
+        }
+
+        fun toIntArray(): IntArray = data.copyOf(size)
+    }
+
+    private class FloatArrayList(initialCapacity: Int) {
+        private var data = FloatArray(initialCapacity)
+        var size = 0
+            private set
+
+        fun add(v: Float) {
+            if (size == data.size) {
+                data = data.copyOf(data.size * 2)
+            }
+            data[size++] = v
+        }
+
+        fun toFloatArray(): FloatArray = data.copyOf(size)
     }
 
     private const val RESAMPLE_N = 32

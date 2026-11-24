@@ -86,6 +86,11 @@ public class KeyboardView extends View {
     private Keyboard mKeyboard;
     @NonNull
     private final KeyDrawParams mKeyDrawParams = new KeyDrawParams();
+    @NonNull
+    private final KeyDrawParams mTempKeyDrawParams = new KeyDrawParams();
+    private final float mDensity;
+    private final float mDp1;
+    private boolean mIsTaskRoundedMainKey;
 
     // Drawing
     /** True if all keys should be drawn */
@@ -130,6 +135,9 @@ public class KeyboardView extends View {
     public KeyboardView(final Context context, final AttributeSet attrs, final int defStyle) {
         super(context, attrs, defStyle);
         mColors = Settings.getValues().mColors;
+        mDensity = context.getResources().getDisplayMetrics().density;
+        mDp1 = Math.max(1f, mDensity);
+        mIsTaskRoundedMainKey = computeIsTaskRoundedMainKeyView();
 
         final TypedArray keyboardViewAttr = context.obtainStyledAttributes(attrs,
                 R.styleable.KeyboardView, defStyle, R.style.KeyboardView);
@@ -187,6 +195,8 @@ public class KeyboardView extends View {
 
     public void setHardwareAcceleratedDrawingEnabled(final boolean enabled) {
         if (!enabled) return;
+        // On API 29+, mHardwareKeysNode (RenderNode) caches keys on the GPU without an extra full-view layer FBO.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return;
         setLayerType(LAYER_TYPE_HARDWARE, null);
     }
 
@@ -208,6 +218,7 @@ public class KeyboardView extends View {
         }
 
         mKeyboard = keyboard;
+        mIsTaskRoundedMainKey = computeIsTaskRoundedMainKeyView();
         mIsDarkBackground = ColorUtils.calculateLuminance(mColors.get(ColorType.MAIN_BACKGROUND)) < 0.5;
         mFunctionalAccentColor = mIsDarkBackground
                 ? mColors.get(ColorType.GESTURE_TRAIL)
@@ -409,7 +420,10 @@ public class KeyboardView extends View {
 
         final KeyVisualAttributes attr = key.getVisualAttributes();
         // don't use the raw key height, linear font scaling with height is too extreme
-        final KeyDrawParams params = mKeyDrawParams.mayCloneAndUpdateParams((int) (key.getHeight() * mKeyScaleForText), attr);
+        final int scaledTextHeight = (int) (key.getHeight() * mKeyScaleForText);
+        final KeyDrawParams params = (attr == null)
+                ? mKeyDrawParams
+                : mTempKeyDrawParams.copyFromAndUpdate(mKeyDrawParams, scaledTextHeight, attr);
         params.mAnimAlpha = Constants.Color.ALPHA_OPAQUE;
 
         if (!key.isSpacer()) {
@@ -422,12 +436,16 @@ public class KeyboardView extends View {
         canvas.translate(-keyDrawX, -keyDrawY);
     }
 
-    private boolean isTaskRoundedMainKeyView() {
+    private boolean computeIsTaskRoundedMainKeyView() {
         return mColors.getHasKeyBorders()
                 && STYLE_ROUNDED.equals(mColors.getThemeStyle())
                 && !(this instanceof PopupKeysKeyboardView)
                 && !(this instanceof MoreSuggestionsView)
                 && !(this instanceof EmojiPageKeyboardView);
+    }
+
+    private boolean isTaskRoundedMainKeyView() {
+        return mIsTaskRoundedMainKey;
     }
 
     private static boolean isShiftActiveOnKeyboard(@NonNull final Key key, @Nullable final Keyboard keyboard) {
@@ -455,8 +473,8 @@ public class KeyboardView extends View {
             if (key.getBackgroundType() == Key.BACKGROUND_TYPE_EMPTY) {
                 return;
             }
-            final float density = getResources().getDisplayMetrics().density;
-            final float dp1 = Math.max(1f, density);
+            final float density = mDensity;
+            final float dp1 = mDp1;
             final boolean isActionKey = key.hasActionKeyBackground();
             final float radius = isActionKey
                     ? Math.min(keyWidth, keyHeight) * 0.5f
@@ -537,9 +555,7 @@ public class KeyboardView extends View {
         final int keyWidth = key.getDrawWidth();
         final int keyHeight = key.getHeight();
         final boolean taskCap = isTaskRoundedMainKeyView();
-        final float dp1 = (taskCap && !mIsDarkBackground)
-                ? Math.max(1f, getResources().getDisplayMetrics().density)
-                : 0f;
+        final float dp1 = (taskCap && !mIsDarkBackground) ? mDp1 : 0f;
         final float pressOffsetY = (taskCap && !mIsDarkBackground && key.isPressed()) ? dp1 : 0f;
         final float centerX = keyWidth * 0.5f;
         final float centerY = (keyHeight - dp1) * 0.5f + pressOffsetY;
@@ -658,13 +674,12 @@ public class KeyboardView extends View {
                 hintBaseline = -mFontMetrics.top;
                 paint.setTextAlign(Align.CENTER);
             } else if (taskCap && !isFunctionalKeyAndRoundedStyle) {
-                final float density = getResources().getDisplayMetrics().density;
-                final float minHintPx = 10.5f * density;
+                final float minHintPx = 10.5f * mDensity;
                 if (paint.getTextSize() < minHintPx) {
                     paint.setTextSize(minHintPx);
                 }
-                hintX = keyWidth - 5f * density;
-                hintBaseline = 4f * density - paint.ascent();
+                hintX = keyWidth - 5f * mDensity;
+                hintBaseline = 4f * mDensity - paint.ascent();
                 paint.setTextAlign(Align.RIGHT);
             } else { // key.hasHintLetter()
                 // The hint letter is placed at top-right corner of the key. Used mainly on phone.

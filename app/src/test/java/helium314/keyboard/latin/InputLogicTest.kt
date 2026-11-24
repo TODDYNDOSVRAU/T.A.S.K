@@ -563,6 +563,7 @@ class InputLogicTest {
     }
 
     @Test fun `double space results in period and space, and delete removes the period`() {
+        latinIME.prefs().edit { putBoolean(Settings.PREF_KEY_USE_DOUBLE_SPACE_PERIOD, true) }
         chainInput("hello")
         input(' ')
         input(' ')

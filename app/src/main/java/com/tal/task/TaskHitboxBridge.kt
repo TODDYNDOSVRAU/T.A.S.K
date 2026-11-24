@@ -122,6 +122,8 @@ object TaskHitboxBridge {
     private const val MAX_KEY_GROW_X = 0.32f
     private const val MAX_KEY_GROW_Y = 0.24f
     private const val WORD_TAP_CAP = 16
+    private const val DELETED_STACK_CAP = 3
+    private const val MAX_TOPIC_ENTRIES = 64
     private const val TAP_LOG_DEBOUNCE_MS = 55L
     private const val EDGE_DAMP_DP = 4f
     private val LN_26 = ln(26.0f)
@@ -449,6 +451,7 @@ object TaskHitboxBridge {
 
     @Volatile private var prefsLoaded = false
     @Volatile private var appContextRef: Context? = null
+    @Volatile private var cachedDensity: Float = 3f
     @Volatile private var attachedViewRef: WeakReference<View>? = null
     @Volatile private var ptTrie: FlatPrefixTrie? = null
     @Volatile private var enTrie: FlatPrefixTrie? = null
@@ -513,10 +516,23 @@ object TaskHitboxBridge {
     private val wordTapH = FloatArray(WORD_TAP_CAP)
     private var wordTapLen = 0
 
-    private var lastDeletedCharIdx = -1
-    private var lastDeletedRawX = 0f
-    private var lastDeletedRawY = 0f
-    private var lastDeletedTimeMs = 0L
+    private var deletedStackLen = 0
+    private val deletedStackChar = IntArray(DELETED_STACK_CAP)
+    private val deletedStackRawX = FloatArray(DELETED_STACK_CAP)
+    private val deletedStackRawY = FloatArray(DELETED_STACK_CAP)
+    private val deletedStackTimeMs = LongArray(DELETED_STACK_CAP)
+    private var lastAutoCommitValid = false
+    private var lastAutoCommitTimeMs = 0L
+    private var lastAutoCommitWrongIdx = -1
+    private var lastAutoCommitRightIdx = -1
+    private var lastAutoCommitPrevDx = 0f
+    private var lastAutoCommitPrevDy = BASE_VERTICAL_BIAS_RATIO
+    private var lastAutoCommitPrevGrowLeft = 0f
+    private var lastAutoCommitPrevGrowRight = 0f
+    private var lastAutoCommitPrevGrowTop = 0f
+    private var lastAutoCommitPrevGrowBottom = 0f
+    private var lastAutoCommitPrevSamples = 0
+    private var lastAutoCommitPrevConf = 0f
     @Volatile private var lastAlphaTapTimeMs = 0L
     @Volatile private var learningDirty = false
 
@@ -618,6 +634,7 @@ object TaskHitboxBridge {
     fun ensureInitialized(context: Context) {
         val appCtx = context.applicationContext
         appContextRef = appCtx
+        cachedDensity = appCtx.resources.displayMetrics.density.coerceAtLeast(0.5f)
         if (!prefsLoaded) {
             prefsLoaded = true
             val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -788,7 +805,8 @@ object TaskHitboxBridge {
             keyConfusion.fill(0f)
             revertShieldCounts.clear()
             wordTapLen = 0
-            lastDeletedCharIdx = -1
+            deletedStackLen = 0
+            lastAutoCommitValid = false
             calibrationSamples = 0
             learnedCorrectionPairs = 0
             blockedAutocorrectReverts = 0
@@ -953,7 +971,8 @@ object TaskHitboxBridge {
             displayZonesPrimed = false
             lastDrawAnimUptimeMs = 0L
             wordTapLen = 0
-            lastDeletedCharIdx = -1
+            deletedStackLen = 0
+            lastAutoCommitValid = false
             topicWords.clear()
             topicBigrams.clear()
             topicWordHashes.clear()
@@ -1075,7 +1094,8 @@ object TaskHitboxBridge {
             isSentenceStart = true
             contextWordCount = 0
             wordTapLen = 0
-            lastDeletedCharIdx = -1
+            deletedStackLen = 0
+            lastAutoCommitValid = false
             lastAlphaTapTimeMs = 0L
             lastBeforePrefixHash = 0L
             lastBeforePrefixLen = -1
@@ -1236,44 +1256,22 @@ object TaskHitboxBridge {
                         lastTopicBeforeLen in 0 until beforePrefixLen &&
                         (wordCount < 2 || prevWord2 == lastTopicFoldedTail)
                     if (canIncremental) {
-                        if (prevWord1.length >= 2) {
-                            topicWords[prevWord1] = (topicWords[prevWord1] ?: 0) + 1
-                            val h1 = fnv1aString(prevWord1)
-                            topicWordHashes[h1] = (topicWordHashes[h1] ?: 0) + 1
-                            if (prevWord2.isNotEmpty()) {
-                                val map = topicBigrams.getOrPut(prevWord2) { HashMap(4) }
-                                map[prevWord1] = (map[prevWord1] ?: 0) + 1
-                                val h2 = fnv1aString(prevWord2)
-                                val hMap = topicBigramHashes.getOrPut(h2) { HashMap(4) }
-                                hMap[h1] = (hMap[h1] ?: 0) + 1
-                            }
-                        }
+                        recordTopicTokenLocked(prevWord1, prevWord2)
                     } else {
                         topicWords.clear()
                         topicBigrams.clear()
                         topicWordHashes.clear()
                         topicBigramHashes.clear()
                         var prevFolded: String? = null
-                        var prevHash = 0L
                         for (w in 0 until wordCount) {
                             val ws = recentWordBounds[w * 2]
                             val we = recentWordBounds[w * 2 + 1]
                             val folded = foldSubstringToString(cs, ws, we)
                             if (folded.length >= 2) {
-                                val h1 = fnv1aString(folded)
-                                topicWords[folded] = (topicWords[folded] ?: 0) + 1
-                                topicWordHashes[h1] = (topicWordHashes[h1] ?: 0) + 1
-                                if (prevFolded != null) {
-                                    val map = topicBigrams.getOrPut(prevFolded) { HashMap(4) }
-                                    map[folded] = (map[folded] ?: 0) + 1
-                                    val hMap = topicBigramHashes.getOrPut(prevHash) { HashMap(4) }
-                                    hMap[h1] = (hMap[h1] ?: 0) + 1
-                                }
+                                recordTopicTokenLocked(folded, prevFolded ?: "")
                                 prevFolded = folded
-                                prevHash = h1
                             } else if (folded.isNotEmpty()) {
                                 prevFolded = folded
-                                prevHash = fnv1aString(folded)
                             }
                         }
                     }
@@ -1285,6 +1283,30 @@ object TaskHitboxBridge {
 
             if (beforeChanged || bilingualChanged || !prefixSame || prevDynamic != dynamicAllowedForField) {
                 recomputeProbabilitiesLocked()
+            }
+        }
+    }
+
+    private fun recordTopicTokenLocked(word: String, prevWord: String) {
+        if (word.length < 2) return
+        val canAddWord = topicWords.containsKey(word) || topicWords.size < MAX_TOPIC_ENTRIES
+        if (canAddWord) {
+            topicWords[word] = (topicWords[word] ?: 0) + 1
+            val h1 = fnv1aString(word)
+            topicWordHashes[h1] = (topicWordHashes[h1] ?: 0) + 1
+            if (prevWord.isNotEmpty()) {
+                val canAddPair = topicBigrams.containsKey(prevWord) || topicBigrams.size < MAX_TOPIC_ENTRIES
+                if (canAddPair) {
+                    val map = topicBigrams.getOrPut(prevWord) { HashMap(4) }
+                    if (map.containsKey(word) || map.size < 16) {
+                        map[word] = (map[word] ?: 0) + 1
+                    }
+                    val h2 = fnv1aString(prevWord)
+                    val hMap = topicBigramHashes.getOrPut(h2) { HashMap(4) }
+                    if (hMap.containsKey(h1) || hMap.size < 16) {
+                        hMap[h1] = (hMap[h1] ?: 0) + 1
+                    }
+                }
             }
         }
     }
@@ -1995,7 +2017,7 @@ object TaskHitboxBridge {
         }
 
         val t0 = System.nanoTime()
-        val density = appContextRef?.resources?.displayMetrics?.density ?: 3f
+        val density = cachedDensity
         val geoChar = geoAlpha ?: if (isSpaceCandidate) '_' else '<'
         val geoAlphaIdx = if (geoAlpha != null) (geoAlpha - 'a') else -1
 
@@ -2080,19 +2102,74 @@ object TaskHitboxBridge {
                     }
                 }
                 if (matchIdx == -1) {
-                    var bestDist = Float.MAX_VALUE
+                    var bestDistSq = Float.MAX_VALUE
                     for (i in 0 until zoneCount) {
                         val r = targetZones[i]
                         val cx = adjX.coerceIn(r.left, r.right)
                         val cy = adjY.coerceIn(r.top, r.bottom)
-                        val d = hypot(adjX - cx, adjY - cy)
-                        if (d < bestDist) {
-                            bestDist = d
+                        val dx = adjX - cx
+                        val dy = adjY - cy
+                        val dSq = dx * dx + dy * dy
+                        if (dSq < bestDistSq) {
+                            bestDistSq = dSq
                             matchIdx = i
                         }
                     }
                 }
                 if (matchIdx == -1) return geometricKey
+
+                // 2D boundary tie-break precision: when outside geometric 52% core & near zone edge (<= 3.5 dp),
+                // evaluate normalized distance to each neighbor's learned centroid + language prior + confusion.
+                val mKey = zoneKeys[matchIdx]
+                val mRect = targetZones[matchIdx]
+                if (mKey != null && adaptiveThumbEnabled) {
+                    val mHb = mKey.hitBox
+                    val mHalfCoreW = mHb.width() * PROTECTED_CORE_RATIO * 0.5f
+                    val mHalfCoreH = mHb.height() * PROTECTED_CORE_RATIO * 0.5f
+                    val inMatchCore = adjX >= (mHb.exactCenterX() - mHalfCoreW) &&
+                        adjX <= (mHb.exactCenterX() + mHalfCoreW) &&
+                        adjY >= (mHb.exactCenterY() - mHalfCoreH) &&
+                        adjY <= (mHb.exactCenterY() + mHalfCoreH)
+                    val bandPx = 3.5f * density
+                    val nearEdge = min(
+                        min(abs(adjX - mRect.left), abs(adjX - mRect.right)),
+                        min(abs(adjY - mRect.top), abs(adjY - mRect.bottom))
+                    ) <= bandPx
+                    if (!inMatchCore && nearEdge) {
+                        val matchCh = zoneCharIdx[matchIdx]
+                        val mW = mHb.width().toFloat().coerceAtLeast(1f)
+                        val mH = mHb.height().toFloat().coerceAtLeast(1f)
+                        val mPcx = mHb.exactCenterX() + keyMeanDx[matchCh] * mW * 0.5f
+                        val mPcy = mHb.exactCenterY() + (keyMeanDy[matchCh] - BASE_VERTICAL_BIAS_RATIO) * mH * 0.5f
+                        val mDx = (adjX - mPcx) / mW
+                        val mDy = (adjY - mPcy) / mH
+                        var bestEv = (mDx * mDx + mDy * mDy) - 0.18f * charProbs[matchCh]
+                        var bestCand = matchIdx
+                        for (i in 0 until zoneCount) {
+                            if (i == matchIdx) continue
+                            val cr = targetZones[i]
+                            if (adjX < cr.left - bandPx || adjX > cr.right + bandPx ||
+                                adjY < cr.top - bandPx || adjY > cr.bottom + bandPx
+                            ) continue
+                            val ck = zoneKeys[i] ?: continue
+                            val ch = zoneCharIdx[i]
+                            val cHb = ck.hitBox
+                            val cW = cHb.width().toFloat().coerceAtLeast(1f)
+                            val cH = cHb.height().toFloat().coerceAtLeast(1f)
+                            val cPcx = cHb.exactCenterX() + keyMeanDx[ch] * cW * 0.5f
+                            val cPcy = cHb.exactCenterY() + (keyMeanDy[ch] - BASE_VERTICAL_BIAS_RATIO) * cH * 0.5f
+                            val cDx = (adjX - cPcx) / cW
+                            val cDy = (adjY - cPcy) / cH
+                            val confTerm = (keyConfusion[matchCh * 26 + ch].coerceAtMost(5f) / 5f)
+                            val ev = (cDx * cDx + cDy * cDy) - 0.18f * charProbs[ch] - 0.12f * confTerm
+                            if (ev + 0.04f < bestEv) {
+                                bestEv = ev
+                                bestCand = i
+                            }
+                        }
+                        matchIdx = bestCand
+                    }
+                }
 
                 resolvedIdx = matchIdx
                 resolvedKey = zoneKeys[matchIdx] ?: return geometricKey
@@ -2169,7 +2246,7 @@ object TaskHitboxBridge {
             pendingValid = false
             synchronized(stateLock) {
                 wordTapLen = 0
-                lastDeletedCharIdx = -1
+                deletedStackLen = 0
             }
             return
         }
@@ -2180,7 +2257,7 @@ object TaskHitboxBridge {
         val codeMatches = committedCode == pendingResCode ||
             (pAlpha != null && cAlpha == pAlpha)
         if (!codeMatches) {
-            synchronized(stateLock) { lastDeletedCharIdx = -1 }
+            synchronized(stateLock) { deletedStackLen = 0 }
             return
         }
 
@@ -2215,26 +2292,32 @@ object TaskHitboxBridge {
                     wordTapW[slot] = pendingKeyW
                     wordTapH[slot] = pendingKeyH
                 }
-                if (lastDeletedCharIdx in 0..25 &&
-                    lastDeletedCharIdx != kIdx &&
-                    (nowMs - lastDeletedTimeMs) <= 1800L
-                ) {
-                    val dist = hypot(lastDeletedRawX - pendingResCx, lastDeletedRawY - pendingResCy)
-                    if (dist <= pendingKeyW * 2.2f) {
-                        recordPerKeyCorrectionLocked(
-                            lastDeletedCharIdx,
-                            kIdx,
-                            lastDeletedRawX,
-                            lastDeletedRawY,
-                            pendingResCx,
-                            pendingResCy,
-                            pendingKeyW,
-                            pendingKeyH
-                        )
+                for (s in deletedStackLen - 1 downTo 0) {
+                    val delChar = deletedStackChar[s]
+                    if (delChar in 0..25 &&
+                        delChar != kIdx &&
+                        (nowMs - deletedStackTimeMs[s]) <= 2200L
+                    ) {
+                        val delX = deletedStackRawX[s]
+                        val delY = deletedStackRawY[s]
+                        val dist = hypot(delX - pendingResCx, delY - pendingResCy)
+                        if (dist <= pendingKeyW * 2.2f) {
+                            recordPerKeyCorrectionLocked(
+                                delChar,
+                                kIdx,
+                                delX,
+                                delY,
+                                pendingResCx,
+                                pendingResCy,
+                                pendingKeyW,
+                                pendingKeyH
+                            )
+                            break
+                        }
                     }
                 }
             }
-            lastDeletedCharIdx = -1
+            deletedStackLen = 0
         }
 
         recordTouch(
@@ -2246,8 +2329,8 @@ object TaskHitboxBridge {
     }
 
     /**
-     * Captures Backspace on the active composing word so a quick corrective tap on a
-     * neighbor key trains the directional hitbox toward the erroneous tap site.
+     * Captures Backspace on the active composing word (up to 3 recent taps) so quick
+     * multi-char corrective retyping trains the directional hitbox toward the erroneous tap site.
      */
     @JvmStatic
     fun onBackspaceCommitted() {
@@ -2255,12 +2338,22 @@ object TaskHitboxBridge {
         synchronized(stateLock) {
             if (wordTapLen > 0) {
                 wordTapLen--
-                lastDeletedCharIdx = wordTapCharIdx[wordTapLen]
-                lastDeletedRawX = wordTapRawX[wordTapLen]
-                lastDeletedRawY = wordTapRawY[wordTapLen]
-                lastDeletedTimeMs = System.currentTimeMillis()
+                if (deletedStackLen == DELETED_STACK_CAP) {
+                    for (i in 0 until DELETED_STACK_CAP - 1) {
+                        deletedStackChar[i] = deletedStackChar[i + 1]
+                        deletedStackRawX[i] = deletedStackRawX[i + 1]
+                        deletedStackRawY[i] = deletedStackRawY[i + 1]
+                        deletedStackTimeMs[i] = deletedStackTimeMs[i + 1]
+                    }
+                    deletedStackLen = DELETED_STACK_CAP - 1
+                }
+                val slot = deletedStackLen++
+                deletedStackChar[slot] = wordTapCharIdx[wordTapLen]
+                deletedStackRawX[slot] = wordTapRawX[wordTapLen]
+                deletedStackRawY[slot] = wordTapRawY[wordTapLen]
+                deletedStackTimeMs[slot] = System.currentTimeMillis()
             } else {
-                lastDeletedCharIdx = -1
+                deletedStackLen = 0
             }
         }
     }
@@ -2275,7 +2368,7 @@ object TaskHitboxBridge {
         synchronized(stateLock) {
             val tapCount = wordTapLen
             wordTapLen = 0
-            lastDeletedCharIdx = -1
+            deletedStackLen = 0
             if (!adaptiveThumbEnabled || !dynamicAllowedForField || !learningAllowedForField ||
                 typedWord == null || committedWord == null ||
                 typedWord.length != committedWord.length ||
@@ -2318,6 +2411,18 @@ object TaskHitboxBridge {
                 )
                 val kw = rHb.width().toFloat().coerceAtLeast(1f)
                 if (dist <= kw * 2.2f) {
+                    lastAutoCommitValid = true
+                    lastAutoCommitTimeMs = System.currentTimeMillis()
+                    lastAutoCommitWrongIdx = wrongIdx
+                    lastAutoCommitRightIdx = rightIdx
+                    lastAutoCommitPrevDx = keyMeanDx[rightIdx]
+                    lastAutoCommitPrevDy = keyMeanDy[rightIdx]
+                    lastAutoCommitPrevGrowLeft = keyGrowLeft[rightIdx]
+                    lastAutoCommitPrevGrowRight = keyGrowRight[rightIdx]
+                    lastAutoCommitPrevGrowTop = keyGrowTop[rightIdx]
+                    lastAutoCommitPrevGrowBottom = keyGrowBottom[rightIdx]
+                    lastAutoCommitPrevSamples = keySamples[rightIdx]
+                    lastAutoCommitPrevConf = keyConfusion[wrongIdx * 26 + rightIdx]
                     recordPerKeyCorrectionLocked(
                         wrongIdx,
                         rightIdx,
@@ -2330,7 +2435,7 @@ object TaskHitboxBridge {
                     )
                 }
             }
-            shouldPersist = learningDirty && (calibrationSamples % 10 == 0)
+            shouldPersist = learningDirty && (calibrationSamples % 20 == 0)
             if (shouldPersist) learningDirty = false
         }
         if (shouldPersist) {
@@ -2338,9 +2443,39 @@ object TaskHitboxBridge {
         }
     }
 
+    private fun incrementRevertShieldLocked(hash: Long) {
+        if (revertShieldCounts.size >= 128 && !revertShieldCounts.containsKey(hash)) {
+            var minKey: Long? = null
+            var minVal = Int.MAX_VALUE
+            for ((k, v) in revertShieldCounts) {
+                if (v < minVal) {
+                    minVal = v
+                    minKey = k
+                }
+            }
+            if (minKey != null) revertShieldCounts.remove(minKey)
+        }
+        revertShieldCounts[hash] = (revertShieldCounts[hash] ?: 0) + 1
+    }
+
     /**
-     * Records a Backspace-undo of an unwanted autocorrection as a 64-bit hash so after
-     * >= 2 reverts T.A.S.K. shields the typed token from future forced overrides.
+     * Records an explicit tap on the verbatim typed word when autocorrection offered a different
+     * override, allowing intentional slang/names to build revert-shield protection cleanly.
+     */
+    @JvmStatic
+    fun onVerbatimWordPreferred(word: CharSequence?) {
+        if (!learningAllowedForField || word.isNullOrBlank()) return
+        val h = fnv1aFolded(word)
+        if (h == 0L) return
+        synchronized(stateLock) {
+            incrementRevertShieldLocked(h)
+            learningDirty = true
+        }
+    }
+
+    /**
+     * Records a Backspace-undo of an unwanted autocorrection as a 64-bit hash and rolls back
+     * any poisoned per-key directional update written by that immediately reverted commit.
      */
     @JvmStatic
     fun onAutocorrectReverted(typedWord: CharSequence?, revertedWord: CharSequence?) {
@@ -2350,19 +2485,26 @@ object TaskHitboxBridge {
         }
         val h = fnv1aFolded(typedWord)
         if (h == 0L) return
+        val nowMs = System.currentTimeMillis()
         synchronized(stateLock) {
-            if (revertShieldCounts.size >= 128 && !revertShieldCounts.containsKey(h)) {
-                var minKey: Long? = null
-                var minVal = Int.MAX_VALUE
-                for ((k, v) in revertShieldCounts) {
-                    if (v < minVal) {
-                        minVal = v
-                        minKey = k
-                    }
+            if (lastAutoCommitValid && (nowMs - lastAutoCommitTimeMs) <= 6000L) {
+                val rIdx = lastAutoCommitRightIdx
+                val wIdx = lastAutoCommitWrongIdx
+                if (rIdx in 0..25 && wIdx in 0..25) {
+                    keyMeanDx[rIdx] = lastAutoCommitPrevDx
+                    keyMeanDy[rIdx] = lastAutoCommitPrevDy
+                    keyGrowLeft[rIdx] = lastAutoCommitPrevGrowLeft
+                    keyGrowRight[rIdx] = lastAutoCommitPrevGrowRight
+                    keyGrowTop[rIdx] = lastAutoCommitPrevGrowTop
+                    keyGrowBottom[rIdx] = lastAutoCommitPrevGrowBottom
+                    keySamples[rIdx] = lastAutoCommitPrevSamples
+                    keyConfusion[wIdx * 26 + rIdx] = lastAutoCommitPrevConf
+                    if (learnedCorrectionPairs > 0) learnedCorrectionPairs--
+                    zoneGeneration++
                 }
-                if (minKey != null) revertShieldCounts.remove(minKey)
             }
-            revertShieldCounts[h] = (revertShieldCounts[h] ?: 0) + 1
+            lastAutoCommitValid = false
+            incrementRevertShieldLocked(h)
             learningDirty = false
         }
         persistLearningProfileAsync(appContextRef)
@@ -2384,7 +2526,7 @@ object TaskHitboxBridge {
     fun getTargetZoneCopyForTest(keyboard: Keyboard?, ch: Char, out: RectF): Boolean {
         if (keyboard == null) return false
         val cIdx = toAlphaChar(ch.code)?.let { it - 'a' } ?: return false
-        val density = appContextRef?.resources?.displayMetrics?.density ?: 3f
+        val density = cachedDensity
         synchronized(stateLock) {
             ensureZonesBuiltLocked(keyboard, density)
             for (i in 0 until zoneCount) {
@@ -2510,13 +2652,24 @@ object TaskHitboxBridge {
                     keyGrowTop[keyIdx] = (keyGrowTop[keyIdx] * (1f - EMA_KEY_ALPHA * 0.5f)).coerceIn(0f, MAX_KEY_GROW_Y)
                 }
 
+                if (abs(normX) <= 0.24f && abs(normY) <= 0.24f) {
+                    val rowOffset = keyIdx * 26
+                    for (j in 0 until 26) {
+                        val v = keyConfusion[rowOffset + j]
+                        if (v > 0f) {
+                            val decayed = v * 0.96f
+                            keyConfusion[rowOffset + j] = if (decayed < 0.25f) 0f else decayed
+                        }
+                    }
+                }
+
                 keySamples[keyIdx]++
                 zoneGeneration++
             }
 
             calibrationSamples++
             learningDirty = true
-            shouldPersist = (calibrationSamples % 10 == 0)
+            shouldPersist = (calibrationSamples % 20 == 0)
             if (shouldPersist) learningDirty = false
         }
 

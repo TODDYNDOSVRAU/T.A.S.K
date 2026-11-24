@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package helium314.keyboard.settings.screens
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
@@ -12,6 +14,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -85,10 +88,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import com.tal.task.TaskHitboxBridge
 import helium314.keyboard.keyboard.KeyboardSwitcher
 import helium314.keyboard.keyboard.KeyboardTheme
+import helium314.keyboard.latin.BuildConfig
 import helium314.keyboard.latin.R
+import helium314.keyboard.latin.common.Links
 import helium314.keyboard.latin.settings.Defaults
 import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.settings.createPrefKeyForBooleanSettings
@@ -231,9 +237,21 @@ fun MainSettingsScreen(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(GridInset),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Surface(
+                        color = Color(0xFF080808),
+                        shape = InnerPillShape,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.size(TouchTargetMin)
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            contentDescription = "Logo T.A.S.K.",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "T.A.S.K.",
@@ -830,6 +848,95 @@ fun MainSettingsScreen(
                                     TalMetricRow("Dicionários S23", "PT-BR 169k · EN-US 129k")
                                     TalMetricRow("Armazenamento local", "Apenas floats dx/dy")
                                     TalMetricRow("Campos sensíveis", "Estático · zero gravação")
+                                }
+                            }
+
+                            TalSectionCard(title = "ATUALIZAÇÕES & INTEGRIDADE (GITHUB)") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(GridInset),
+                                    verticalArrangement = Arrangement.spacedBy(GridInset)
+                                ) {
+                                    TalMetricRow(
+                                        "Versão instalada",
+                                        "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+                                    )
+                                    TalMetricRow("Assinatura SHA-256", "c8ccda66…1e0b5")
+                                    TalMetricRow("Canal de atualização", "GitHub Releases · 0 permissão rede")
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(GridInset)
+                                    ) {
+                                        val releaseInteraction = remember { MutableInteractionSource() }
+                                        OutlinedButton(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                val intent = Intent(Intent.ACTION_VIEW, Links.GITHUB_RELEASES.toUri())
+                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                runCatching { context.startActivity(intent) }.onFailure {
+                                                    scope.launch {
+                                                        snackbarHostState.showSnackbar(
+                                                            message = "Não foi possível abrir o navegador. Acesse TODDYNDOSVRAU/T.A.S.K no GitHub.",
+                                                            duration = SnackbarDuration.Short
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            interactionSource = releaseInteraction,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(TouchTargetMin)
+                                                .taskPressScale(releaseInteraction),
+                                            shape = InnerPillShape,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                        ) {
+                                            Text(
+                                                "Ver releases",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+
+                                        val autoUpdateInteraction = remember { MutableInteractionSource() }
+                                        OutlinedButton(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                try {
+                                                    val obtainiumIntent = Intent(
+                                                        Intent.ACTION_VIEW,
+                                                        Links.OBTAINIUM_ADD_URL.toUri()
+                                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    context.startActivity(obtainiumIntent)
+                                                } catch (_: ActivityNotFoundException) {
+                                                    val cfgIntent = Intent(
+                                                        Intent.ACTION_VIEW,
+                                                        Links.GITHUB_OBTAINIUM_CONFIG.toUri()
+                                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    runCatching { context.startActivity(cfgIntent) }
+                                                    scope.launch {
+                                                        snackbarHostState.showSnackbar(
+                                                            message = "Obtainium não encontrado; abrindo obtainium.json para atualização automática pelo GitHub.",
+                                                            duration = SnackbarDuration.Short
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            interactionSource = autoUpdateInteraction,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(TouchTargetMin)
+                                                .taskPressScale(autoUpdateInteraction),
+                                            shape = InnerPillShape,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                        ) {
+                                            Text(
+                                                "Auto-update",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

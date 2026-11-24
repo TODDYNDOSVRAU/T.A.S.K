@@ -342,6 +342,13 @@ public final class InputLogic {
             return inputTransaction;
         }
 
+        if (mWordComposer.isComposingWord() && !mWordComposer.isBatchMode()
+                && suggestionInfo.isKindOf(SuggestedWordInfo.KIND_TYPED)) {
+            final SuggestedWordInfo autoCorr = mWordComposer.getAutoCorrectionOrNull();
+            if (autoCorr != null && !suggestion.equals(autoCorr.getWord())) {
+                com.tal.task.TaskHitboxBridge.onVerbatimWordPreferred(suggestion);
+            }
+        }
         commitChosenWord(settingsValues, suggestion, suggestionInfo, LastComposedWord.COMMIT_TYPE_MANUAL_PICK, LastComposedWord.NOT_A_SEPARATOR);
         mConnection.endBatchEdit();
         // Don't allow cancellation of manual pick

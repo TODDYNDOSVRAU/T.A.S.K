@@ -44,6 +44,10 @@ public final class KeyDrawParams {
     public KeyDrawParams() {}
 
     private KeyDrawParams(@NonNull final KeyDrawParams copyFrom) {
+        copyFieldsFrom(copyFrom);
+    }
+
+    private void copyFieldsFrom(@NonNull final KeyDrawParams copyFrom) {
         mTypeface = copyFrom.mTypeface;
 
         mLetterSize = copyFrom.mLetterSize;
@@ -69,6 +73,13 @@ public final class KeyDrawParams {
         mHintLabelOffCenterRatio = copyFrom.mHintLabelOffCenterRatio;
 
         mAnimAlpha = copyFrom.mAnimAlpha;
+    }
+
+    @NonNull
+    public KeyDrawParams copyFromAndUpdate(@NonNull final KeyDrawParams src, int keySize, @Nullable KeyVisualAttributes attr) {
+        copyFieldsFrom(src);
+        updateParams(keySize, attr);
+        return this;
     }
 
     public void updateParams(int keySize, @Nullable KeyVisualAttributes attr) {

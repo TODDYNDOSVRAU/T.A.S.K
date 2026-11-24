@@ -238,4 +238,95 @@ class TaskV33ErrorProofTest {
             putString(Settings.PREF_THEME_COLORS_NIGHT, Defaults.PREF_THEME_COLORS_NIGHT)
         }
     }
+
+    @Test
+    fun revertedAutocorrectRollsBackPoisonedPerKeyLearning() {
+        val (latinIME, kb) = setupFreshKeyboard()
+
+        val chars = "twste"
+        for (i in chars.indices) {
+            val ch = chars[i]
+            val k = assertNotNull(kb.getKey(ch.code))
+            val tx = if (i == 1) (k.hitBox.exactCenterX() + k.hitBox.width() * 0.18f).toInt() else k.hitBox.centerX()
+            TaskHitboxBridge.resolveKey(kb, tx, k.hitBox.centerY(), k)
+            TaskHitboxBridge.onTapCommitted(ch.code)
+        }
+        val preCommitE = RectF()
+        assertTrue(TaskHitboxBridge.getTargetZoneCopyForTest(kb, 'e', preCommitE))
+
+        TaskHitboxBridge.onWordCommitted("twste", "teste")
+        val afterCommitPairs = TaskHitboxBridge.getTelemetrySnapshot(latinIME).learnedCorrectionPairs
+        assertEquals(1, afterCommitPairs)
+
+        val postCommitE = RectF()
+        assertTrue(TaskHitboxBridge.getTargetZoneCopyForTest(kb, 'e', postCommitE))
+        assertTrue(
+            postCommitE.left < preCommitE.left,
+            "onWordCommitted must shift E's left boundary leftward before revert"
+        )
+
+        // Immediately reverting the autocorrect must undo poisoned per-key directional growth
+        TaskHitboxBridge.onAutocorrectReverted("twste", "teste")
+        val afterRevertPairs = TaskHitboxBridge.getTelemetrySnapshot(latinIME).learnedCorrectionPairs
+        assertEquals(0, afterRevertPairs, "Revert must roll back learnedCorrectionPairs")
+
+        val restoredE = RectF()
+        assertTrue(TaskHitboxBridge.getTargetZoneCopyForTest(kb, 'e', restoredE))
+        assertEquals(
+            preCommitE.left,
+            restoredE.left,
+            0.05f,
+            "Revert must restore E's left boundary so rejected autocorrects do not poison hitboxes"
+        )
+    }
+
+    @Test
+    fun multiBackspaceStackTrainsAfterDeletingTwoChars() {
+        val (latinIME, kb) = setupFreshKeyboard()
+        val keyW = assertNotNull(kb.getKey('w'.code))
+        val keyS = assertNotNull(kb.getKey('s'.code))
+        val keyE = assertNotNull(kb.getKey('e'.code))
+
+        val baselineE = RectF()
+        assertTrue(TaskHitboxBridge.getTargetZoneCopyForTest(kb, 'e', baselineE))
+
+        val wTapX = (keyW.hitBox.exactCenterX() + keyW.hitBox.width() * 0.18f).toInt()
+        TaskHitboxBridge.resolveKey(kb, wTapX, keyW.hitBox.centerY(), keyW)
+        TaskHitboxBridge.onTapCommitted('w'.code)
+
+        TaskHitboxBridge.resolveKey(kb, keyS.hitBox.centerX(), keyS.hitBox.centerY(), keyS)
+        TaskHitboxBridge.onTapCommitted('s'.code)
+
+        // Delete 2 chars ('s' then 'w') before retyping 'e'
+        TaskHitboxBridge.onBackspaceCommitted()
+        TaskHitboxBridge.onBackspaceCommitted()
+
+        TaskHitboxBridge.resolveKey(kb, keyE.hitBox.centerX(), keyE.hitBox.centerY(), keyE)
+        TaskHitboxBridge.onTapCommitted('e'.code)
+
+        val snap = TaskHitboxBridge.getTelemetrySnapshot(latinIME)
+        assertTrue(snap.learnedCorrectionPairs >= 1, "Multi-backspace stack must match the erased 'w' tap")
+
+        val adaptedE = RectF()
+        assertTrue(TaskHitboxBridge.getTargetZoneCopyForTest(kb, 'e', adaptedE))
+        assertTrue(
+            adaptedE.left < baselineE.left,
+            "Retyping E after deleting 'w'+'s' must expand E leftward toward W"
+        )
+    }
+
+    @Test
+    fun verbatimWordPreferredContributesToRevertShield() {
+        setupFreshKeyboard()
+        assertFalse(TaskHitboxBridge.shouldBlockAutoCorrection("tarkas"))
+
+        TaskHitboxBridge.onVerbatimWordPreferred("tarkas")
+        assertFalse(TaskHitboxBridge.shouldBlockAutoCorrection("tarkas"))
+
+        TaskHitboxBridge.onAutocorrectReverted("tarkas", "tarjas")
+        assertTrue(
+            TaskHitboxBridge.shouldBlockAutoCorrection("tarkas"),
+            "1 manual verbatim pick + 1 autocorrect revert must activate revert shield"
+        )
+    }
 }
