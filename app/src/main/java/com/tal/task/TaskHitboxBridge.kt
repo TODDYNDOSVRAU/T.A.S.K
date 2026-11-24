@@ -36,18 +36,20 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * T.A.S.K. v3.0.0 — Apple HIG × T.A.L. 2D Dynamic Tap Zones & Context Engine.
+ * T.A.S.K. v3.3.0 — T.A.L. Per-Key Asymmetric 2D Dynamic Tap Zones & Anti-Error Engine.
  *
  * Highlights:
  * - Flat-Int CSR Trie (4 primitive arrays, ~350–500 KB per language, zero TrieNode object heap),
  *   loaded on demand for the active language and released on trim memory.
  * - Zero-Allocation touch/draw hot loop: lookup ASCII folding without Normalizer/Regex,
  *   pre-allocated 26-slot zone & display RectF pools, and rolling-hash incremental topic updates.
- * - 2D Non-Overlapping Dynamic Tap Zones (horizontal ±20% + vertical between rows ±12%,
- *   strictly clamped outside every key's 56% protected central core) + 4 dp lateral palm damping.
- * - Adaptive Shannon-entropy fusion (context-heavy at 0–2 chars / high entropy, lexicon-heavy at 3+ chars).
- * - Automatic suspension on Password / Explicit-Email fields and code/URL tokens (camelCase, _, @, ://, /).
- * - Smooth ~90 ms 120 Hz visual boundary interpolation in PRED/ENG while hit-testing stays at 0 ms lag.
+ * - Per-Key Asymmetric Directional Learning: every letter (a–z) tracks its own touch centroid
+ *   (dx, dy) and independent Left/Right/Top/Bottom expansion weights driven by:
+ *   (1) confirmed edge-tap distribution, (2) Backspace-then-neighbor-letter correction pairs, and
+ *   (3) single-character autocorrect diff feedback — always protecting every key's 52% core.
+ * - Anti-Error Defenses: inner-edge '.' / ',' accidental period guard during fast typing,
+ *   top-18% Space / left-15% Backspace neighbor rescue, and Autocorrect Revert Shield (blocks
+ *   repeating forced autocorrections on words the user reverted >= 2 times via 64-bit hashes).
  */
 object TaskHitboxBridge {
 
@@ -92,7 +94,11 @@ object TaskHitboxBridge {
         val bilingualPtEn: Boolean,
         val lastGlideWord: String,
         val lastGlideLatencyMs: Double,
-        val totalGlides: Int
+        val totalGlides: Int,
+        val learnedCorrectionPairs: Int = 0,
+        val blockedAutocorrectWords: Int = 0,
+        val adaptedKeyCount: Int = 0,
+        val topAdaptedSummary: String = "—"
     )
 
     private const val PREFS_NAME = "task_hitbox_prefs"
@@ -100,11 +106,22 @@ object TaskHitboxBridge {
     private const val KEY_SENSITIVITY = "sensitivity"
     private const val KEY_ADAPTIVE = "adaptive_thumb"
     private const val KEY_SAMPLES = "cal_samples"
+    private const val KEY_LEARNED_PAIRS = "learned_pairs"
+    private const val KEY_BLOCKED_REVERTS = "blocked_reverts"
+    private const val KEY_CONF_PAIRS = "conf_pairs"
+    private const val KEY_REVERT_HASHES = "revert_hashes"
 
-    private const val PROTECTED_CORE_RATIO = 0.56f
+    private const val PROTECTED_CORE_RATIO = 0.52f
     private const val BASE_VERTICAL_BIAS_RATIO = 0.06f
     private const val MAX_ADAPTIVE_BIAS_RATIO = 0.14f
     private const val EMA_ALPHA = 0.04f
+    private const val EMA_KEY_ALPHA = 0.08f
+    private const val EMA_ERROR_ALPHA = 0.16f
+    private const val MAX_KEY_DX = 0.30f
+    private const val MAX_KEY_DY = 0.25f
+    private const val MAX_KEY_GROW_X = 0.32f
+    private const val MAX_KEY_GROW_Y = 0.24f
+    private const val WORD_TAP_CAP = 16
     private const val TAP_LOG_DEBOUNCE_MS = 55L
     private const val EDGE_DAMP_DP = 4f
     private val LN_26 = ln(26.0f)
@@ -471,10 +488,40 @@ object TaskHitboxBridge {
     private val topicBigramHashes = HashMap<Long, HashMap<Long, Int>>(64)
     private val recentWordBounds = IntArray(244) // pairs (start, end) up to 122 words, zero allocation!
 
-    // Per-row adaptive thumb offset (normalized floats dx/dy, NEVER stores text)
+    // Per-row adaptive offset & Per-Key 2D asymmetric directional profile (NEVER stores plaintext)
     private val rowBiasX = FloatArray(4)
     private val rowBiasY = floatArrayOf(BASE_VERTICAL_BIAS_RATIO, BASE_VERTICAL_BIAS_RATIO, BASE_VERTICAL_BIAS_RATIO * 0.75f, 0f)
+    private val keyMeanDx = FloatArray(26)
+    private val keyMeanDy = FloatArray(26) { BASE_VERTICAL_BIAS_RATIO }
+    private val keyGrowLeft = FloatArray(26)
+    private val keyGrowRight = FloatArray(26)
+    private val keyGrowTop = FloatArray(26)
+    private val keyGrowBottom = FloatArray(26)
+    private val keySamples = IntArray(26)
+    private val keyConfusion = FloatArray(26 * 26)
     @Volatile private var calibrationSamples = 0
+    @Volatile private var learnedCorrectionPairs = 0
+    @Volatile private var blockedAutocorrectReverts = 0
+
+    // Active-word tap ring for single-char autocorrect diff & Backspace-correction pair learning
+    private val wordTapCharIdx = IntArray(WORD_TAP_CAP)
+    private val wordTapRawX = FloatArray(WORD_TAP_CAP)
+    private val wordTapRawY = FloatArray(WORD_TAP_CAP)
+    private val wordTapCx = FloatArray(WORD_TAP_CAP)
+    private val wordTapCy = FloatArray(WORD_TAP_CAP)
+    private val wordTapW = FloatArray(WORD_TAP_CAP)
+    private val wordTapH = FloatArray(WORD_TAP_CAP)
+    private var wordTapLen = 0
+
+    private var lastDeletedCharIdx = -1
+    private var lastDeletedRawX = 0f
+    private var lastDeletedRawY = 0f
+    private var lastDeletedTimeMs = 0L
+    @Volatile private var lastAlphaTapTimeMs = 0L
+    @Volatile private var learningDirty = false
+
+    // Privacy-preserving 64-bit FNV-1a autocorrect revert shield (NEVER stores plaintext)
+    private val revertShieldCounts = HashMap<Long, Int>(64)
 
     // Probability fusion arrays (protected by stateLock)
     private val trieProbs = FloatArray(26)
@@ -578,11 +625,50 @@ object TaskHitboxBridge {
             sensitivity = Sensitivity.entries.getOrElse(prefs.getInt(KEY_SENSITIVITY, Sensitivity.STANDARD.ordinal)) { Sensitivity.STANDARD }
             adaptiveThumbEnabled = prefs.getBoolean(KEY_ADAPTIVE, true)
             calibrationSamples = prefs.getInt(KEY_SAMPLES, 0)
+            learnedCorrectionPairs = prefs.getInt(KEY_LEARNED_PAIRS, 0)
+            blockedAutocorrectReverts = prefs.getInt(KEY_BLOCKED_REVERTS, 0)
             synchronized(stateLock) {
                 for (r in 0 until 4) {
                     rowBiasX[r] = prefs.getFloat("rbx_$r", 0f).coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
                     val defY = if (r < 2) BASE_VERTICAL_BIAS_RATIO else if (r == 2) BASE_VERTICAL_BIAS_RATIO * 0.75f else 0f
                     rowBiasY[r] = prefs.getFloat("rby_$r", defY).coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+                }
+                for (k in 0 until 26) {
+                    keyMeanDx[k] = prefs.getFloat("kmx_$k", 0f).coerceIn(-MAX_KEY_DX, MAX_KEY_DX)
+                    keyMeanDy[k] = prefs.getFloat("kmy_$k", BASE_VERTICAL_BIAS_RATIO).coerceIn(-MAX_KEY_DY, MAX_KEY_DY)
+                    keyGrowLeft[k] = prefs.getFloat("kgl_$k", 0f).coerceIn(0f, MAX_KEY_GROW_X)
+                    keyGrowRight[k] = prefs.getFloat("kgr_$k", 0f).coerceIn(0f, MAX_KEY_GROW_X)
+                    keyGrowTop[k] = prefs.getFloat("kgt_$k", 0f).coerceIn(0f, MAX_KEY_GROW_Y)
+                    keyGrowBottom[k] = prefs.getFloat("kgb_$k", 0f).coerceIn(0f, MAX_KEY_GROW_Y)
+                    keySamples[k] = prefs.getInt("ksmp_$k", 0).coerceAtLeast(0)
+                }
+                keyConfusion.fill(0f)
+                val confRaw = prefs.getString(KEY_CONF_PAIRS, "") ?: ""
+                if (confRaw.isNotEmpty()) {
+                    for (entry in confRaw.split(';')) {
+                        val sep = entry.indexOf(':')
+                        if (sep > 0) {
+                            val idx = entry.substring(0, sep).toIntOrNull()
+                            val v = entry.substring(sep + 1).toFloatOrNull()
+                            if (idx != null && v != null && idx in keyConfusion.indices) {
+                                keyConfusion[idx] = v.coerceIn(0f, 20f)
+                            }
+                        }
+                    }
+                }
+                revertShieldCounts.clear()
+                val revRaw = prefs.getString(KEY_REVERT_HASHES, "") ?: ""
+                if (revRaw.isNotEmpty()) {
+                    for (entry in revRaw.split(';')) {
+                        val sep = entry.indexOf(':')
+                        if (sep > 0) {
+                            val h = entry.substring(0, sep).toLongOrNull(16)
+                            val c = entry.substring(sep + 1).toIntOrNull()
+                            if (h != null && c != null && c > 0 && revertShieldCounts.size < 128) {
+                                revertShieldCounts[h] = c
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -692,14 +778,42 @@ object TaskHitboxBridge {
             rowBiasY[1] = BASE_VERTICAL_BIAS_RATIO
             rowBiasY[2] = BASE_VERTICAL_BIAS_RATIO * 0.75f
             rowBiasY[3] = 0f
+            keyMeanDx.fill(0f)
+            keyMeanDy.fill(BASE_VERTICAL_BIAS_RATIO)
+            keyGrowLeft.fill(0f)
+            keyGrowRight.fill(0f)
+            keyGrowTop.fill(0f)
+            keyGrowBottom.fill(0f)
+            keySamples.fill(0)
+            keyConfusion.fill(0f)
+            revertShieldCounts.clear()
+            wordTapLen = 0
+            lastDeletedCharIdx = -1
             calibrationSamples = 0
+            learnedCorrectionPairs = 0
+            blockedAutocorrectReverts = 0
+            learningDirty = false
+            zoneGeneration++
         }
         val editor = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
         editor.putInt(KEY_SAMPLES, 0)
+        editor.putInt(KEY_LEARNED_PAIRS, 0)
+        editor.putInt(KEY_BLOCKED_REVERTS, 0)
+        editor.remove(KEY_CONF_PAIRS)
+        editor.remove(KEY_REVERT_HASHES)
         synchronized(stateLock) {
             for (r in 0 until 4) {
                 editor.putFloat("rbx_$r", rowBiasX[r])
                 editor.putFloat("rby_$r", rowBiasY[r])
+            }
+            for (k in 0 until 26) {
+                editor.remove("kmx_$k")
+                editor.remove("kmy_$k")
+                editor.remove("kgl_$k")
+                editor.remove("kgr_$k")
+                editor.remove("kgt_$k")
+                editor.remove("kgb_$k")
+                editor.remove("ksmp_$k")
             }
         }
         editor.apply()
@@ -714,6 +828,7 @@ object TaskHitboxBridge {
                 rowBiasY[r] = biasY[r].coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
             }
             calibrationSamples = samples.coerceAtLeast(0)
+            zoneGeneration++
         }
         val editor = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
         editor.putInt(KEY_SAMPLES, calibrationSamples)
@@ -762,9 +877,12 @@ object TaskHitboxBridge {
     fun onWindowHidden() {
         inGestureStroke = false
         pendingValid = false
+        val shouldPersist: Boolean
         synchronized(stateLock) {
             displayZonesPrimed = false
             lastDrawAnimUptimeMs = 0L
+            wordTapLen = 0
+            lastDeletedCharIdx = -1
             topicWords.clear()
             topicBigrams.clear()
             topicWordHashes.clear()
@@ -776,6 +894,11 @@ object TaskHitboxBridge {
             lastTopicFoldedTail = ""
             contextWordCount = 0
             cachedHudStamp = Long.MIN_VALUE
+            shouldPersist = learningDirty
+            learningDirty = false
+        }
+        if (shouldPersist) {
+            persistLearningProfileAsync(appContextRef)
         }
     }
 
@@ -813,6 +936,28 @@ object TaskHitboxBridge {
         }
         val trieBytes = (ptTrie?.estimatedBytes ?: 0L) + (enTrie?.estimatedBytes ?: 0L)
         synchronized(stateLock) {
+            var adaptedCount = 0
+            val ranked = ArrayList<Pair<String, Float>>(4)
+            for (k in 0 until 26) {
+                if (keySamples[k] > 0) adaptedCount++
+                val gL = keyGrowLeft[k]
+                val gR = keyGrowRight[k]
+                val gT = keyGrowTop[k]
+                val gB = keyGrowBottom[k]
+                var bestDir = 'E'
+                var bestVal = gL
+                if (gR > bestVal) { bestDir = 'D'; bestVal = gR }
+                if (gT > bestVal) { bestDir = 'C'; bestVal = gT }
+                if (gB > bestVal) { bestDir = 'B'; bestVal = gB }
+                if (bestVal >= 0.02f) {
+                    val pct = (bestVal * 100f).roundToInt()
+                    ranked.add("${('a' + k).uppercaseChar()}($bestDir+$pct%)" to bestVal)
+                }
+            }
+            ranked.sortByDescending { it.second }
+            val summary = if (ranked.isEmpty()) "Aguardando amostras" else ranked.take(3).joinToString(" · ") { it.first }
+            val activeShields = revertShieldCounts.count { it.value >= 2 }
+
             return LiveTelemetry(
                 totalTaps = totalTaps,
                 rescuedTaps = rescuedCount,
@@ -836,7 +981,11 @@ object TaskHitboxBridge {
                 bilingualPtEn = bilingualPtEnActive,
                 lastGlideWord = TaskGlideDecoder.lastGlideWord,
                 lastGlideLatencyMs = TaskGlideDecoder.lastGlideLatencyMs,
-                totalGlides = TaskGlideDecoder.totalGlides
+                totalGlides = TaskGlideDecoder.totalGlides,
+                learnedCorrectionPairs = learnedCorrectionPairs,
+                blockedAutocorrectWords = activeShields,
+                adaptedKeyCount = adaptedCount,
+                topAdaptedSummary = summary
             )
         }
     }
@@ -854,6 +1003,9 @@ object TaskHitboxBridge {
             prevWord2 = ""
             isSentenceStart = true
             contextWordCount = 0
+            wordTapLen = 0
+            lastDeletedCharIdx = -1
+            lastAlphaTapTimeMs = 0L
             lastBeforePrefixHash = 0L
             lastBeforePrefixLen = -1
             lastTopicWordCount = 0
@@ -1621,11 +1773,22 @@ object TaskHitboxBridge {
             for (i in 0 until n - 1) {
                 val lIdx = indices[i]
                 val rIdx = indices[i + 1]
+                val lChar = zoneCharIdx[lIdx]
+                val rChar = zoneCharIdx[rIdx]
                 val lhb = zoneKeys[lIdx]!!.hitBox
                 val rhb = zoneKeys[rIdx]!!.hitBox
                 val midX = (lhb.right + rhb.left) * 0.5f
                 val avgW = (lhb.width() + rhb.width()) * 0.5f
-                val delta = (charBoosts[zoneCharIdx[lIdx]] - charBoosts[zoneCharIdx[rIdx]]) * (avgW * maxShiftRatio)
+                val langDelta = (charBoosts[lChar] - charBoosts[rChar]) * (avgW * maxShiftRatio)
+                val dirDelta = if (adaptiveThumbEnabled) {
+                    (keyGrowRight[lChar] - keyGrowLeft[rChar]) * (avgW * 0.55f) +
+                        (keyMeanDx[lChar] + keyMeanDx[rChar]) * (avgW * 0.25f)
+                } else 0f
+                val confDelta = if (adaptiveThumbEnabled) {
+                    ((keyConfusion[rChar * 26 + lChar] - keyConfusion[lChar * 26 + rChar]) / 6f)
+                        .coerceIn(-0.18f, 0.18f) * avgW
+                } else 0f
+                val delta = langDelta + dirDelta + confDelta
 
                 val minBound = lhb.exactCenterX() + lhb.width() * PROTECTED_CORE_RATIO * 0.5f + halfGutter
                 val maxBound = rhb.exactCenterX() - rhb.width() * PROTECTED_CORE_RATIO * 0.5f - halfGutter
@@ -1645,19 +1808,21 @@ object TaskHitboxBridge {
             }
         }
 
-        // 3. Vertical 2D pairwise boundaries between adjacent rows (B1.Q1 — strictly ZERO overlap in Y)
+        // 3. Vertical 2D pairwise boundaries between adjacent rows (zero overlap in Y)
         for (r in 0 until rowCount - 1) {
             val topN = rowCounts[r]
             val botN = rowCounts[r + 1]
             for (ti in 0 until topN) {
                 val tIdx = rowKeyIdx[r][ti]
+                val tChar = zoneCharIdx[tIdx]
                 val tRect = targetZones[tIdx]
                 val tHb = zoneKeys[tIdx]!!.hitBox
                 val tCoreBottom = tHb.exactCenterY() + tHb.height() * PROTECTED_CORE_RATIO * 0.5f
-                val tBoost = charBoosts[zoneCharIdx[tIdx]]
+                val tBoost = charBoosts[tChar]
 
                 for (bi in 0 until botN) {
                     val bIdx = rowKeyIdx[r + 1][bi]
+                    val bChar = zoneCharIdx[bIdx]
                     val bRect = targetZones[bIdx]
                     // Check horizontal overlap between target zones (plus gutter tolerance)
                     if (tRect.right + gutter <= bRect.left || bRect.right + gutter <= tRect.left) continue
@@ -1666,8 +1831,17 @@ object TaskHitboxBridge {
                     val bCoreTop = bHb.exactCenterY() - bHb.height() * PROTECTED_CORE_RATIO * 0.5f
                     val midY = (tHb.bottom + bHb.top) * 0.5f
                     val avgH = (tHb.height() + bHb.height()) * 0.5f
-                    val bBoost = charBoosts[zoneCharIdx[bIdx]]
-                    val deltaY = (tBoost - bBoost) * (avgH * maxVertRatio)
+                    val bBoost = charBoosts[bChar]
+                    val langDeltaY = (tBoost - bBoost) * (avgH * maxVertRatio)
+                    val dirDeltaY = if (adaptiveThumbEnabled) {
+                        (keyGrowBottom[tChar] - keyGrowTop[bChar]) * (avgH * 0.45f) +
+                            ((keyMeanDy[tChar] - BASE_VERTICAL_BIAS_RATIO) + (keyMeanDy[bChar] - BASE_VERTICAL_BIAS_RATIO)) * (avgH * 0.20f)
+                    } else 0f
+                    val confDeltaY = if (adaptiveThumbEnabled) {
+                        ((keyConfusion[bChar * 26 + tChar] - keyConfusion[tChar * 26 + bChar]) / 8f)
+                            .coerceIn(-0.14f, 0.14f) * avgH
+                    } else 0f
+                    val deltaY = langDeltaY + dirDeltaY + confDeltaY
 
                     val minY = tCoreBottom + halfGutter
                     val maxY = bCoreTop - halfGutter
@@ -1714,16 +1888,34 @@ object TaskHitboxBridge {
         if (keyboard == null || geometricKey == null || !dynamicAllowedForField || inGestureStroke) {
             return geometricKey
         }
-        val geoAlpha = toAlphaChar(geometricKey.code)
-        val isSpaceCandidate = geometricKey.code == Constants.CODE_SPACE
-        val isDeleteCandidate = geometricKey.code == KeyCode.DELETE
+        val gHb = geometricKey.hitBox
+        val code = geometricKey.code
+
+        // Inner-edge guard for '.' (left 26% facing Space) & ',' (right 26%) during fast continuous typing
+        if ((code == '.'.code && touchX <= gHb.left + gHb.width() * 0.26f) ||
+            (code == ','.code && touchX >= gHb.right - gHb.width() * 0.26f)
+        ) {
+            val nowMs = System.currentTimeMillis()
+            if (foldedPrefixLen >= 2 && (nowMs - lastAlphaTapTimeMs) <= 650L) {
+                val spaceKey = keyboard.getKey(Constants.CODE_SPACE)
+                if (spaceKey != null) {
+                    rescuedCount++
+                    pendingValid = false
+                    return spaceKey
+                }
+            }
+            return geometricKey
+        }
+
+        val geoAlpha = toAlphaChar(code)
+        val isSpaceCandidate = code == Constants.CODE_SPACE
+        val isDeleteCandidate = code == KeyCode.DELETE
         if (geoAlpha == null && !isSpaceCandidate && !isDeleteCandidate) {
             return geometricKey
         }
         if ((isSpaceCandidate || isDeleteCandidate) && foldedPrefixLen < 1) {
             return geometricKey
         }
-        val gHb = geometricKey.hitBox
         if (isSpaceCandidate && touchY > gHb.top + gHb.height() * 0.18f) {
             return geometricKey
         }
@@ -1734,6 +1926,7 @@ object TaskHitboxBridge {
         val t0 = System.nanoTime()
         val density = appContextRef?.resources?.displayMetrics?.density ?: 3f
         val geoChar = geoAlpha ?: if (isSpaceCandidate) '_' else '<'
+        val geoAlphaIdx = if (geoAlpha != null) (geoAlpha - 'a') else -1
 
         val resolvedIdx: Int
         val adjX: Float
@@ -1749,8 +1942,17 @@ object TaskHitboxBridge {
             val keyH = gHb.height().toFloat().coerceAtLeast(1f)
             val row = estimateRow(keyboard, gHb.exactCenterY())
 
-            val biasXRatio = if (adaptiveThumbEnabled) rowBiasX[row] else 0f
-            val biasYRatio = if (adaptiveThumbEnabled) rowBiasY[row] else BASE_VERTICAL_BIAS_RATIO
+            val keyWeight = if (adaptiveThumbEnabled && geoAlphaIdx in 0..25) {
+                (keySamples[geoAlphaIdx] / 8f).coerceIn(0f, 1f) * 0.65f
+            } else 0f
+            val biasXRatio = if (adaptiveThumbEnabled) {
+                val rX = rowBiasX[row]
+                if (keyWeight > 0f) rX * (1f - keyWeight) + keyMeanDx[geoAlphaIdx] * keyWeight else rX
+            } else 0f
+            val biasYRatio = if (adaptiveThumbEnabled) {
+                val rY = rowBiasY[row]
+                if (keyWeight > 0f) rY * (1f - keyWeight) + keyMeanDy[geoAlphaIdx] * keyWeight else rY
+            } else BASE_VERTICAL_BIAS_RATIO
             adjX = touchX - biasXRatio * keyW
             adjY = touchY - biasYRatio * keyH
             lastOffsetYPx = -(biasYRatio * keyH)
@@ -1792,7 +1994,7 @@ object TaskHitboxBridge {
                 resolvedKey = zoneKeys[neighborIdx] ?: return geometricKey
                 resolvedProb = prob
             } else {
-                // B1.Q4: Reject accidental curved-edge palm touches strictly in the outer 4 dp bezel
+                // Reject accidental curved-edge bezel touches strictly in the outer 4 dp bezel
                 if (geometricKey === zoneKeys[0] && adjX < targetZones[0].left - 2f * density &&
                     gHb.left <= (8f * density)
                 ) {
@@ -1825,7 +2027,7 @@ object TaskHitboxBridge {
                 resolvedKey = zoneKeys[matchIdx] ?: return geometricKey
                 resolvedProb = charProbs[zoneCharIdx[matchIdx]]
 
-                // B1.Q4 right-edge bezel palm check
+                // Right-edge bezel check
                 val rHb = resolvedKey.hitBox
                 if (adjX > targetZones[matchIdx].right + 2f * density &&
                     rHb.right >= (keyboard.mOccupiedWidth - 8f * density)
@@ -1886,21 +2088,30 @@ object TaskHitboxBridge {
     }
 
     /**
-     * Promotes pending ACTION_DOWN resolution into telemetry and adaptive thumb EMA calibration
+     * Promotes pending ACTION_DOWN resolution into telemetry and per-key directional EMA
      * strictly upon confirmed key commit (ACTION_UP / confirmed repeat=false tap).
      */
     @JvmStatic
     fun onTapCommitted(committedCode: Int) {
-        if (!pendingValid) return
-        val wasValid = pendingValid
-        pendingValid = false
-        if (!wasValid) return
-
         val cAlpha = toAlphaChar(committedCode)
+        if (cAlpha == null) {
+            pendingValid = false
+            synchronized(stateLock) {
+                wordTapLen = 0
+                lastDeletedCharIdx = -1
+            }
+            return
+        }
+        if (!pendingValid) return
+        pendingValid = false
+
         val pAlpha = toAlphaChar(pendingResCode)
         val codeMatches = committedCode == pendingResCode ||
-            (cAlpha != null && pAlpha != null && cAlpha == pAlpha)
-        if (!codeMatches) return
+            (pAlpha != null && cAlpha == pAlpha)
+        if (!codeMatches) {
+            synchronized(stateLock) { lastDeletedCharIdx = -1 }
+            return
+        }
 
         if (pendingRescued) {
             rescuedCount++
@@ -1908,13 +2119,53 @@ object TaskHitboxBridge {
             coreProtectedCount++
         }
 
+        val kIdx = cAlpha - 'a'
+        val nowMs = System.currentTimeMillis()
+        lastAlphaTapTimeMs = nowMs
+
         updateAdaptiveCalibration(
+            kIdx,
             pendingResRow,
             pendingRawX - pendingResCx,
             pendingRawY - pendingResCy,
             pendingKeyW,
             pendingKeyH
         )
+
+        synchronized(stateLock) {
+            if (adaptiveThumbEnabled && dynamicAllowedForField && learningAllowedForField) {
+                if (wordTapLen < WORD_TAP_CAP) {
+                    val slot = wordTapLen++
+                    wordTapCharIdx[slot] = kIdx
+                    wordTapRawX[slot] = pendingRawX
+                    wordTapRawY[slot] = pendingRawY
+                    wordTapCx[slot] = pendingResCx
+                    wordTapCy[slot] = pendingResCy
+                    wordTapW[slot] = pendingKeyW
+                    wordTapH[slot] = pendingKeyH
+                }
+                if (lastDeletedCharIdx in 0..25 &&
+                    lastDeletedCharIdx != kIdx &&
+                    (nowMs - lastDeletedTimeMs) <= 1800L
+                ) {
+                    val dist = hypot(lastDeletedRawX - pendingResCx, lastDeletedRawY - pendingResCy)
+                    if (dist <= pendingKeyW * 2.2f) {
+                        recordPerKeyCorrectionLocked(
+                            lastDeletedCharIdx,
+                            kIdx,
+                            lastDeletedRawX,
+                            lastDeletedRawY,
+                            pendingResCx,
+                            pendingResCy,
+                            pendingKeyW,
+                            pendingKeyH
+                        )
+                    }
+                }
+            }
+            lastDeletedCharIdx = -1
+        }
+
         recordTouch(
             pendingRawX, pendingRawY, pendingAdjX, pendingAdjY,
             pendingGeoChar, pendingResChar, pendingResCx, pendingResCy,
@@ -1923,39 +2174,358 @@ object TaskHitboxBridge {
         )
     }
 
+    /**
+     * Captures Backspace on the active composing word so a quick corrective tap on a
+     * neighbor key trains the directional hitbox toward the erroneous tap site.
+     */
+    @JvmStatic
+    fun onBackspaceCommitted() {
+        pendingValid = false
+        synchronized(stateLock) {
+            if (wordTapLen > 0) {
+                wordTapLen--
+                lastDeletedCharIdx = wordTapCharIdx[wordTapLen]
+                lastDeletedRawX = wordTapRawX[wordTapLen]
+                lastDeletedRawY = wordTapRawY[wordTapLen]
+                lastDeletedTimeMs = System.currentTimeMillis()
+            } else {
+                lastDeletedCharIdx = -1
+            }
+        }
+    }
+
+    /**
+     * Learns per-key directional bias when autocorrection replaces exactly 1 character
+     * in a committed word of identical length (e.g. "twste" -> "teste" trains 'e' left toward 'w').
+     */
+    @JvmStatic
+    fun onWordCommitted(typedWord: CharSequence?, committedWord: CharSequence?) {
+        val shouldPersist: Boolean
+        synchronized(stateLock) {
+            val tapCount = wordTapLen
+            wordTapLen = 0
+            lastDeletedCharIdx = -1
+            if (!adaptiveThumbEnabled || !dynamicAllowedForField || !learningAllowedForField ||
+                typedWord == null || committedWord == null ||
+                typedWord.length != committedWord.length ||
+                typedWord.length !in 2..WORD_TAP_CAP ||
+                tapCount != typedWord.length
+            ) {
+                return
+            }
+
+            var diffCount = 0
+            var diffPos = -1
+            var wrongIdx = -1
+            var rightIdx = -1
+            for (i in 0 until typedWord.length) {
+                val tc = foldCharAscii(typedWord[i])
+                val cc = foldCharAscii(committedWord[i])
+                if (tc != cc) {
+                    if (tc !in 'a'..'z' || cc !in 'a'..'z') return
+                    diffCount++
+                    if (diffCount > 1) return
+                    diffPos = i
+                    wrongIdx = tc - 'a'
+                    rightIdx = cc - 'a'
+                }
+            }
+            if (diffCount != 1 || diffPos < 0 || wrongIdx !in 0..25 || rightIdx !in 0..25) return
+
+            var rightKey: Key? = null
+            for (i in 0 until zoneCount) {
+                if (zoneCharIdx[i] == rightIdx) {
+                    rightKey = zoneKeys[i]
+                    break
+                }
+            }
+            if (rightKey != null) {
+                val rHb = rightKey.hitBox
+                val dist = hypot(
+                    wordTapRawX[diffPos] - rHb.exactCenterX(),
+                    wordTapRawY[diffPos] - rHb.exactCenterY()
+                )
+                val kw = rHb.width().toFloat().coerceAtLeast(1f)
+                if (dist <= kw * 2.2f) {
+                    recordPerKeyCorrectionLocked(
+                        wrongIdx,
+                        rightIdx,
+                        wordTapRawX[diffPos],
+                        wordTapRawY[diffPos],
+                        rHb.exactCenterX(),
+                        rHb.exactCenterY(),
+                        kw,
+                        rHb.height().toFloat().coerceAtLeast(1f)
+                    )
+                }
+            }
+            shouldPersist = learningDirty && (calibrationSamples % 10 == 0)
+            if (shouldPersist) learningDirty = false
+        }
+        if (shouldPersist) {
+            persistLearningProfileAsync(appContextRef)
+        }
+    }
+
+    /**
+     * Records a Backspace-undo of an unwanted autocorrection as a 64-bit hash so after
+     * >= 2 reverts T.A.S.K. shields the typed token from future forced overrides.
+     */
+    @JvmStatic
+    fun onAutocorrectReverted(typedWord: CharSequence?, revertedWord: CharSequence?) {
+        if (!learningAllowedForField || typedWord.isNullOrBlank()) return
+        if (revertedWord != null && typedWord.toString().equals(revertedWord.toString(), ignoreCase = true)) {
+            return
+        }
+        val h = fnv1aFolded(typedWord)
+        if (h == 0L) return
+        synchronized(stateLock) {
+            if (revertShieldCounts.size >= 128 && !revertShieldCounts.containsKey(h)) {
+                var minKey: Long? = null
+                var minVal = Int.MAX_VALUE
+                for ((k, v) in revertShieldCounts) {
+                    if (v < minVal) {
+                        minVal = v
+                        minKey = k
+                    }
+                }
+                if (minKey != null) revertShieldCounts.remove(minKey)
+            }
+            revertShieldCounts[h] = (revertShieldCounts[h] ?: 0) + 1
+            learningDirty = false
+        }
+        persistLearningProfileAsync(appContextRef)
+    }
+
+    @JvmStatic
+    fun shouldBlockAutoCorrection(word: CharSequence?): Boolean {
+        if (word.isNullOrBlank()) return false
+        val h = fnv1aFolded(word)
+        if (h == 0L) return false
+        synchronized(stateLock) {
+            val blocked = (revertShieldCounts[h] ?: 0) >= 2
+            if (blocked) blockedAutocorrectReverts++
+            return blocked
+        }
+    }
+
+    @JvmStatic
+    fun getTargetZoneCopyForTest(keyboard: Keyboard?, ch: Char, out: RectF): Boolean {
+        if (keyboard == null) return false
+        val cIdx = toAlphaChar(ch.code)?.let { it - 'a' } ?: return false
+        val density = appContextRef?.resources?.displayMetrics?.density ?: 3f
+        synchronized(stateLock) {
+            ensureZonesBuiltLocked(keyboard, density)
+            for (i in 0 until zoneCount) {
+                if (zoneCharIdx[i] == cIdx) {
+                    out.set(targetZones[i])
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun fnv1aFolded(cs: CharSequence): Long {
+        var hash = -3750763034362895579L
+        var len = 0
+        for (i in 0 until cs.length) {
+            val fc = foldCharAscii(cs[i])
+            if (fc != '\u0000') {
+                hash = (hash xor fc.code.toLong()) * 1099511628211L
+                len++
+            }
+        }
+        return if (len > 0) hash else 0L
+    }
+
+    private fun recordPerKeyCorrectionLocked(
+        wrongIdx: Int,
+        rightIdx: Int,
+        wrongRawX: Float,
+        wrongRawY: Float,
+        rightCx: Float,
+        rightCy: Float,
+        rightW: Float,
+        rightH: Float
+    ) {
+        if (wrongIdx !in 0..25 || rightIdx !in 0..25 || wrongIdx == rightIdx) return
+        if (!adaptiveThumbEnabled || !dynamicAllowedForField || !learningAllowedForField) return
+        val kw = rightW.coerceAtLeast(1f)
+        val kh = rightH.coerceAtLeast(1f)
+        val normX = ((wrongRawX - rightCx) / kw).coerceIn(-0.95f, 0.95f)
+        val normY = ((wrongRawY - rightCy) / kh).coerceIn(-0.95f, 0.95f)
+
+        keyMeanDx[rightIdx] = (keyMeanDx[rightIdx] * (1f - EMA_ERROR_ALPHA) +
+            normX.coerceIn(-0.45f, 0.45f) * EMA_ERROR_ALPHA).coerceIn(-MAX_KEY_DX, MAX_KEY_DX)
+        keyMeanDy[rightIdx] = (keyMeanDy[rightIdx] * (1f - EMA_ERROR_ALPHA) +
+            normY.coerceIn(-0.45f, 0.45f) * EMA_ERROR_ALPHA).coerceIn(-MAX_KEY_DY, MAX_KEY_DY)
+
+        if (normX < -0.05f) {
+            val gain = ((-normX) * 0.45f).coerceAtMost(MAX_KEY_GROW_X)
+            keyGrowLeft[rightIdx] = (keyGrowLeft[rightIdx] * (1f - EMA_ERROR_ALPHA) + gain).coerceIn(0f, MAX_KEY_GROW_X)
+        } else if (normX > 0.05f) {
+            val gain = (normX * 0.45f).coerceAtMost(MAX_KEY_GROW_X)
+            keyGrowRight[rightIdx] = (keyGrowRight[rightIdx] * (1f - EMA_ERROR_ALPHA) + gain).coerceIn(0f, MAX_KEY_GROW_X)
+        }
+
+        if (normY < -0.05f) {
+            val gainY = ((-normY) * 0.35f).coerceAtMost(MAX_KEY_GROW_Y)
+            keyGrowTop[rightIdx] = (keyGrowTop[rightIdx] * (1f - EMA_ERROR_ALPHA) + gainY).coerceIn(0f, MAX_KEY_GROW_Y)
+        } else if (normY > 0.05f) {
+            val gainY = (normY * 0.35f).coerceAtMost(MAX_KEY_GROW_Y)
+            keyGrowBottom[rightIdx] = (keyGrowBottom[rightIdx] * (1f - EMA_ERROR_ALPHA) + gainY).coerceIn(0f, MAX_KEY_GROW_Y)
+        }
+
+        keySamples[rightIdx]++
+        keyConfusion[wrongIdx * 26 + rightIdx] = (keyConfusion[wrongIdx * 26 + rightIdx] + 1f).coerceAtMost(20f)
+        learnedCorrectionPairs++
+        zoneGeneration++
+        learningDirty = true
+    }
+
     private fun estimateRow(keyboard: Keyboard, centerY: Float): Int {
         val h = keyboard.mOccupiedHeight.toFloat().coerceAtLeast(1f)
         return ((centerY / h) * 4f).toInt().coerceIn(0, 3)
     }
 
-    private fun updateAdaptiveCalibration(row: Int, errX: Float, errY: Float, keyW: Float, keyH: Float) {
+    private fun updateAdaptiveCalibration(
+        keyIdx: Int,
+        row: Int,
+        errX: Float,
+        errY: Float,
+        keyW: Float,
+        keyH: Float
+    ) {
         if (!adaptiveThumbEnabled || !dynamicAllowedForField || !learningAllowedForField) return
-        val normX = (errX / keyW).coerceIn(-0.4f, 0.4f)
-        val normY = (errY / keyH).coerceIn(-0.4f, 0.4f)
-        if (abs(normX) > 0.35f || abs(normY) > 0.35f) return
+        val normX = (errX / keyW).coerceIn(-0.50f, 0.50f)
+        val normY = (errY / keyH).coerceIn(-0.50f, 0.50f)
+        if (abs(normX) > 0.48f || abs(normY) > 0.48f) return
 
-        val sampleCount: Int
-        val copyX: FloatArray
-        val copyY: FloatArray
+        val shouldPersist: Boolean
         synchronized(stateLock) {
-            rowBiasX[row] = (rowBiasX[row] * (1f - EMA_ALPHA) + normX * EMA_ALPHA)
+            rowBiasX[row] = (rowBiasX[row] * (1f - EMA_ALPHA) + normX.coerceIn(-0.35f, 0.35f) * EMA_ALPHA)
                 .coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
-            rowBiasY[row] = (rowBiasY[row] * (1f - EMA_ALPHA) + normY * EMA_ALPHA)
+            rowBiasY[row] = (rowBiasY[row] * (1f - EMA_ALPHA) + normY.coerceIn(-0.35f, 0.35f) * EMA_ALPHA)
                 .coerceIn(-MAX_ADAPTIVE_BIAS_RATIO, MAX_ADAPTIVE_BIAS_RATIO)
+
+            if (keyIdx in 0..25) {
+                keyMeanDx[keyIdx] = (keyMeanDx[keyIdx] * (1f - EMA_KEY_ALPHA) + normX * EMA_KEY_ALPHA)
+                    .coerceIn(-MAX_KEY_DX, MAX_KEY_DX)
+                keyMeanDy[keyIdx] = (keyMeanDy[keyIdx] * (1f - EMA_KEY_ALPHA) + normY * EMA_KEY_ALPHA)
+                    .coerceIn(-MAX_KEY_DY, MAX_KEY_DY)
+
+                if (normX < -0.04f) {
+                    val leftGain = ((-normX - 0.04f) * 2.2f).coerceAtMost(MAX_KEY_GROW_X)
+                    keyGrowLeft[keyIdx] = (keyGrowLeft[keyIdx] * (1f - EMA_KEY_ALPHA) + leftGain * EMA_KEY_ALPHA)
+                        .coerceIn(0f, MAX_KEY_GROW_X)
+                    keyGrowRight[keyIdx] = (keyGrowRight[keyIdx] * (1f - EMA_KEY_ALPHA * 0.5f)).coerceIn(0f, MAX_KEY_GROW_X)
+                } else if (normX > 0.04f) {
+                    val rightGain = ((normX - 0.04f) * 2.2f).coerceAtMost(MAX_KEY_GROW_X)
+                    keyGrowRight[keyIdx] = (keyGrowRight[keyIdx] * (1f - EMA_KEY_ALPHA) + rightGain * EMA_KEY_ALPHA)
+                        .coerceIn(0f, MAX_KEY_GROW_X)
+                    keyGrowLeft[keyIdx] = (keyGrowLeft[keyIdx] * (1f - EMA_KEY_ALPHA * 0.5f)).coerceIn(0f, MAX_KEY_GROW_X)
+                }
+
+                if (normY < -0.04f) {
+                    val topGain = ((-normY - 0.04f) * 1.8f).coerceAtMost(MAX_KEY_GROW_Y)
+                    keyGrowTop[keyIdx] = (keyGrowTop[keyIdx] * (1f - EMA_KEY_ALPHA) + topGain * EMA_KEY_ALPHA)
+                        .coerceIn(0f, MAX_KEY_GROW_Y)
+                    keyGrowBottom[keyIdx] = (keyGrowBottom[keyIdx] * (1f - EMA_KEY_ALPHA * 0.5f)).coerceIn(0f, MAX_KEY_GROW_Y)
+                } else if (normY > 0.04f) {
+                    val botGain = ((normY - 0.04f) * 1.8f).coerceAtMost(MAX_KEY_GROW_Y)
+                    keyGrowBottom[keyIdx] = (keyGrowBottom[keyIdx] * (1f - EMA_KEY_ALPHA) + botGain * EMA_KEY_ALPHA)
+                        .coerceIn(0f, MAX_KEY_GROW_Y)
+                    keyGrowTop[keyIdx] = (keyGrowTop[keyIdx] * (1f - EMA_KEY_ALPHA * 0.5f)).coerceIn(0f, MAX_KEY_GROW_Y)
+                }
+
+                keySamples[keyIdx]++
+                zoneGeneration++
+            }
+
             calibrationSamples++
-            sampleCount = calibrationSamples
-            if (sampleCount % 15 != 0) return
-            copyX = rowBiasX.copyOf()
-            copyY = rowBiasY.copyOf()
+            learningDirty = true
+            shouldPersist = (calibrationSamples % 10 == 0)
+            if (shouldPersist) learningDirty = false
         }
 
-        appContextRef?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()?.apply {
-            putInt(KEY_SAMPLES, sampleCount)
-            for (r in 0 until 4) {
-                putFloat("rbx_$r", copyX[r])
-                putFloat("rby_$r", copyY[r])
+        if (shouldPersist) {
+            persistLearningProfileAsync(appContextRef)
+        }
+    }
+
+    private fun persistLearningProfileAsync(context: Context?) {
+        val ctx = context?.applicationContext ?: return
+        val copyRowX: FloatArray
+        val copyRowY: FloatArray
+        val copyKdx: FloatArray
+        val copyKdy: FloatArray
+        val copyKgl: FloatArray
+        val copyKgr: FloatArray
+        val copyKgt: FloatArray
+        val copyKgb: FloatArray
+        val copyKsmp: IntArray
+        val copySamples: Int
+        val copyPairs: Int
+        val copyBlocked: Int
+        val confEncoded: String
+        val revEncoded: String
+
+        synchronized(stateLock) {
+            copyRowX = rowBiasX.copyOf()
+            copyRowY = rowBiasY.copyOf()
+            copyKdx = keyMeanDx.copyOf()
+            copyKdy = keyMeanDy.copyOf()
+            copyKgl = keyGrowLeft.copyOf()
+            copyKgr = keyGrowRight.copyOf()
+            copyKgt = keyGrowTop.copyOf()
+            copyKgb = keyGrowBottom.copyOf()
+            copyKsmp = keySamples.copyOf()
+            copySamples = calibrationSamples
+            copyPairs = learnedCorrectionPairs
+            copyBlocked = blockedAutocorrectReverts
+            confEncoded = buildString(128) {
+                var first = true
+                for (i in keyConfusion.indices) {
+                    if (keyConfusion[i] >= 0.5f) {
+                        if (!first) append(';')
+                        first = false
+                        append(i).append(':').append(keyConfusion[i].roundToInt())
+                    }
+                }
             }
-            apply()
+            revEncoded = buildString(128) {
+                var first = true
+                for ((h, c) in revertShieldCounts) {
+                    if (!first) append(';')
+                    first = false
+                    append(java.lang.Long.toHexString(h)).append(':').append(c)
+                }
+            }
+        }
+
+        loaderExecutor.execute {
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply {
+                putInt(KEY_SAMPLES, copySamples)
+                putInt(KEY_LEARNED_PAIRS, copyPairs)
+                putInt(KEY_BLOCKED_REVERTS, copyBlocked)
+                putString(KEY_CONF_PAIRS, confEncoded)
+                putString(KEY_REVERT_HASHES, revEncoded)
+                for (r in 0 until 4) {
+                    putFloat("rbx_$r", copyRowX[r])
+                    putFloat("rby_$r", copyRowY[r])
+                }
+                for (k in 0 until 26) {
+                    putFloat("kmx_$k", copyKdx[k])
+                    putFloat("kmy_$k", copyKdy[k])
+                    putFloat("kgl_$k", copyKgl[k])
+                    putFloat("kgr_$k", copyKgr[k])
+                    putFloat("kgt_$k", copyKgt[k])
+                    putFloat("kgb_$k", copyKgb[k])
+                    putInt("ksmp_$k", copyKsmp[k])
+                }
+                apply()
+            }
         }
     }
 

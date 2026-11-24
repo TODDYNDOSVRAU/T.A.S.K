@@ -27,9 +27,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 
 /**
- * T.A.S.K. v3.2.0 Apple Taptic Engine Haptic & Low-Latency SoundPool Audio Manager.
+ * T.A.S.K. v3.3.0 Precision LRA Haptic & Low-Latency SoundPool Audio Manager.
  * - Zero per-keypress allocation: pre-builds LRA VibrationEffect primitives and loads 3 matte
- *   iOS-style short PCM transient clicks (< 6 ms) into SoundPool at initInternal().
+ *   short PCM transient clicks (< 6 ms) into SoundPool at initInternal().
  * - Discrete haptic detent throttling (>= 22 ms) for cursor glide and delete-swipe.
  */
 public final class AudioAndHapticFeedbackManager {
@@ -44,7 +44,7 @@ public final class AudioAndHapticFeedbackManager {
     private int mSfxDeleteId = 0;
     private int mSfxFuncId = 0;
 
-    // Pre-allocated Taptic Engine VibrationEffects (B4.Q2)
+    // Pre-allocated Precision LRA VibrationEffects
     private VibrationEffect mLetterTickEffect;
     private VibrationEffect mFunctionalClickEffect;
     private VibrationEffect mDetentTickEffect;
@@ -73,7 +73,7 @@ public final class AudioAndHapticFeedbackManager {
         mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         mVibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
         mHasVibrator = mVibrator != null && mVibrator.hasVibrator();
-        buildTapticEffects();
+        buildPrecisionHapticEffects();
         initSoundPool(context);
     }
 
@@ -163,7 +163,7 @@ public final class AudioAndHapticFeedbackManager {
         buf[offset + 1] = (byte) ((value >>> 8) & 0xFF);
     }
 
-    private void buildTapticEffects() {
+    private void buildPrecisionHapticEffects() {
         if (!mHasVibrator || mVibrator == null) {
             return;
         }

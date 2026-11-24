@@ -1912,6 +1912,7 @@ public final class InputLogic {
         mConnection.deleteTextBeforeCursor(deleteLength);
         if (!TextUtils.isEmpty(committedWord)) {
             unlearnWord(committedWordString, inputTransaction.getSettingsValues(), DictionaryFacilitator.UnlearnEvent.REVERT);
+            com.tal.task.TaskHitboxBridge.onAutocorrectReverted(originallyTypedWord, committedWordString);
         }
         final String stringToCommit = originallyTypedWord +
                 (usePhantomSpace ? "" : separatorString);
@@ -2428,6 +2429,9 @@ public final class InputLogic {
         // what user typed. Note: currently this is done much later in
         // LastComposedWord#didCommitTypedWord by string equality of the remembered
         // strings.
+        if (mWordComposer.isComposingWord()) {
+            com.tal.task.TaskHitboxBridge.onWordCommitted(mWordComposer.getTypedWord(), chosenWord);
+        }
         mLastComposedWord = mWordComposer.commitWord(commitType, chosenWord, separatorString, ngramContext);
         if (DebugFlags.DEBUG_ENABLED) {
             long runTimeMillis = SystemClock.elapsedRealtime() - startTimeMillis;

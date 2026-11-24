@@ -231,17 +231,20 @@ class TaskV32AuditTest {
     }
 
     @Test
-    fun iosCleanBottomRowDefaultAndToggleRestoresPunctuation() {
+    fun bottomPunctuationAndHintsDefaultOnAndToggleWorks() {
         val latinIME = Robolectric.setupService(LatinIME::class.java)
         val prefs = latinIME.prefs()
         prefs.edit {
             remove(Settings.PREF_SHOW_BOTTOM_PUNCTUATION)
             remove(Settings.PREF_SHOW_EMOJI_KEY)
+            remove(Settings.PREF_SHOW_HINTS)
+            remove(Settings.PREF_KEY_USE_DOUBLE_SPACE_PERIOD)
         }
 
-        assertFalse(Defaults.PREF_SHOW_BOTTOM_PUNCTUATION, "Default PREF_SHOW_BOTTOM_PUNCTUATION must be false (D15)")
-        assertFalse(Defaults.PREF_SHOW_HINTS, "Default PREF_SHOW_HINTS must be false (D14)")
-        assertTrue(Defaults.PREF_SHOW_EMOJI_KEY, "Default PREF_SHOW_EMOJI_KEY must be true (D15)")
+        assertTrue(Defaults.PREF_SHOW_BOTTOM_PUNCTUATION, "Default PREF_SHOW_BOTTOM_PUNCTUATION must be true (D20)")
+        assertTrue(Defaults.PREF_SHOW_HINTS, "Default PREF_SHOW_HINTS must be true (D20)")
+        assertTrue(Defaults.PREF_SHOW_EMOJI_KEY, "Default PREF_SHOW_EMOJI_KEY must be true (D20)")
+        assertFalse(Defaults.PREF_KEY_USE_DOUBLE_SPACE_PERIOD, "Default double-space period must be false (D22)")
         assertEquals("", Defaults.PREF_ADDITIONAL_SUBTYPES, "Default PREF_ADDITIONAL_SUBTYPES must be empty (D19)")
 
         Settings.getInstance().loadSettings(
@@ -253,14 +256,14 @@ class TaskV32AuditTest {
         switcher.onCreateInputView(latinIME, true)
         switcher.setThemeNeedsReload()
         switcher.reloadMainKeyboard()
-        val cleanKb = assertNotNull(switcher.keyboard)
+        val defaultKb = assertNotNull(switcher.keyboard)
 
-        assertNotNull(cleanKb.getKey(Constants.CODE_SPACE), "Clean iOS bottom row must contain Space")
-        assertNull(cleanKb.getKey(','.code), "Clean iOS bottom row must omit dedicated comma by default")
-        assertNull(cleanKb.getKey('.'.code), "Clean iOS bottom row must omit dedicated period by default")
+        assertNotNull(defaultKb.getKey(Constants.CODE_SPACE), "Default bottom row must contain Space")
+        assertNotNull(defaultKb.getKey(','.code), "Default bottom row must contain comma key (D20)")
+        assertNotNull(defaultKb.getKey('.'.code), "Default bottom row must contain period key (D20)")
 
-        // Enabling ADVANCED toggle restores dedicated ',' and '.' on bottom row
-        prefs.edit { putBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, true) }
+        // Disabling toggle hides dedicated ',' and '.' on bottom row
+        prefs.edit { putBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, false) }
         Settings.getInstance().loadSettings(
             latinIME,
             latinIME.resources.configuration.locale,
@@ -268,11 +271,11 @@ class TaskV32AuditTest {
         )
         switcher.setThemeNeedsReload()
         switcher.reloadMainKeyboard()
-        val punctKb = assertNotNull(switcher.keyboard)
-        assertNotNull(punctKb.getKey(','.code), "Enabling PREF_SHOW_BOTTOM_PUNCTUATION must restore comma key")
-        assertNotNull(punctKb.getKey('.'.code), "Enabling PREF_SHOW_BOTTOM_PUNCTUATION must restore period key")
+        val minimalKb = assertNotNull(switcher.keyboard)
+        assertNull(minimalKb.getKey(','.code), "Disabling PREF_SHOW_BOTTOM_PUNCTUATION must omit comma key")
+        assertNull(minimalKb.getKey('.'.code), "Disabling PREF_SHOW_BOTTOM_PUNCTUATION must omit period key")
 
-        // Restore clean default
-        prefs.edit { putBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, false) }
+        // Restore defaults
+        prefs.edit { putBoolean(Settings.PREF_SHOW_BOTTOM_PUNCTUATION, true) }
     }
 }

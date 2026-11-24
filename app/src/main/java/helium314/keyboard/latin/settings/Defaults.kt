@@ -74,12 +74,12 @@ object Defaults {
     const val PREF_ALWAYS_SHOW_SUGGESTIONS = false
     const val PREF_ALWAYS_SHOW_SUGGESTIONS_EXCEPT_WEB_TEXT = true
     const val PREF_KEY_USE_PERSONALIZED_DICTS = true
-    const val PREF_KEY_USE_DOUBLE_SPACE_PERIOD = true
+    const val PREF_KEY_USE_DOUBLE_SPACE_PERIOD = false
     const val PREF_BLOCK_POTENTIALLY_OFFENSIVE = true
     const val PREF_SHOW_LANGUAGE_SWITCH_KEY = false
     const val PREF_LANGUAGE_SWITCH_KEY = "internal"
     const val PREF_SHOW_EMOJI_KEY = true
-    const val PREF_SHOW_BOTTOM_PUNCTUATION = false
+    const val PREF_SHOW_BOTTOM_PUNCTUATION = true
     const val PREF_SHOW_DPAD_KEY = true
     const val PREF_VARIABLE_TOOLBAR_DIRECTION = true
     const val PREF_ADDITIONAL_SUBTYPES = ""
@@ -91,7 +91,7 @@ object Defaults {
     @JvmField
     val PREF_BOTTOM_ROW_SCALE = Array(4) { DEFAULT_SIZE_SCALE }
     @JvmField
-    // Elevated portrait bottom padding (iPhone-style thumb ergonomics above S23 gesture bar)
+    // Elevated portrait bottom padding above system gesture bar
     val PREF_BOTTOM_PADDING_SCALE = arrayOf(1.35f, 0f, 1.35f, 0f)
     @JvmField
     val PREF_SIDE_PADDING_SCALE = Array(8) { 0f }
@@ -150,7 +150,7 @@ object Defaults {
     const val PREF_LOCALIZED_NUMBER_ROW = true
     const val PREF_SHOW_NUMBER_ROW_HINTS = false
     const val PREF_CUSTOM_CURRENCY_KEY = ""
-    const val PREF_SHOW_HINTS = false
+    const val PREF_SHOW_HINTS = true
     const val PREF_POPUP_KEYS_ORDER = POPUP_KEYS_ORDER_DEFAULT
     const val PREF_POPUP_KEYS_HINT_ORDER = POPUP_KEYS_LABEL_DEFAULT
     const val PREF_SHOW_POPUP_HINTS = false

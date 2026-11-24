@@ -51,6 +51,7 @@ private constructor(val themeId: Int, @JvmField val mStyleId: Int) {
         // new themes that are just colors
         const val THEME_TAL_DARK = "tal_dark"
         const val THEME_TAL_LIGHT = "tal_light"
+        const val THEME_TASK_EMERALD = "task_emerald"
         const val THEME_LIGHT = "light"
         const val THEME_HOLO_WHITE = "holo_white"
         const val THEME_DARK = "dark"
@@ -68,7 +69,7 @@ private constructor(val themeId: Int, @JvmField val mStyleId: Int) {
         const val THEME_SAND = "sand"
         const val THEME_VIOLETTE = "violette"
         fun getAvailableDefaultColors(prefs: SharedPreferences, isNight: Boolean) = listOfNotNull(
-            if (!isNight) THEME_TAL_LIGHT else null, THEME_TAL_DARK,
+            if (!isNight) THEME_TAL_LIGHT else null, THEME_TAL_DARK, THEME_TASK_EMERALD,
             if (!isNight) THEME_LIGHT else null, THEME_DARK,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) THEME_DYNAMIC else null,
             if (prefs.getString(Settings.PREF_THEME_STYLE, Defaults.PREF_THEME_STYLE) == STYLE_HOLO) THEME_HOLO_WHITE else null,
@@ -155,21 +156,33 @@ private constructor(val themeId: Int, @JvmField val mStyleId: Int) {
                     themeStyle,
                     hasBorders,
                     "#7EE3EA".toColorInt(), // Ice accent (13.4:1 on #080808)
-                    "#080808".toColorInt(), // Absolute Black background
-                    "#1D1D1D".toColorInt(), // Dark Surface 2 elevated alpha keys (Apple Dark Mode hierarchy)
-                    "#141414".toColorInt(), // Dark Surface 1 recessed functional keys
-                    "#1D1D1D".toColorInt(), // Spacebar elevated with alpha block
-                    "#F2F2F0".toColorInt(), // Precision White text
-                    "#8C8C8C".toColorInt(), // Technical Gray dark hints
+                    "#080808".toColorInt(), // Absolute Black OLED background
+                    "#24292C".toColorInt(), // Elevated dark slate alpha & emoji/space keys
+                    "#0A4E52".toColorInt(), // Deep Teal container for Shift, Delete, ?123, ',', '.', Enter
+                    "#24292C".toColorInt(), // Spacebar matched to alpha surface
+                    "#F2F2F0".toColorInt(), // Precision White glyph text
+                    "#B4BCBF".toColorInt(), // Crisp high-contrast corner hint text
+                    keyboardBackground = backgroundImage
+                )
+                THEME_TASK_EMERALD -> DefaultColors(
+                    themeStyle,
+                    hasBorders,
+                    "#A3F0D6".toColorInt(), // Mint accent matching emerald OLED reference
+                    "#000000".toColorInt(), // Pure OLED black canvas
+                    "#2B3135".toColorInt(), // Neutral slate-gray alpha, emoji & space caps
+                    "#084D3D".toColorInt(), // Deep emerald functional & circular action containers
+                    "#2B3135".toColorInt(), // Spacebar surface
+                    "#F2F2F0".toColorInt(), // Crisp white primary glyphs
+                    "#C8CFD3".toColorInt(), // Legible top-right symbol & digit hints
                     keyboardBackground = backgroundImage
                 )
                 THEME_TAL_LIGHT -> DefaultColors(
                     themeStyle,
                     hasBorders,
                     "#0D6C74".toColorInt(), // Deep Teal accent (5.5:1 on #F2F2F0)
-                    "#F2F2F0".toColorInt(), // Precision White background
-                    "#FFFFFF".toColorInt(), // Light Surface 1 keys
-                    "#E4E4E2".toColorInt(), // Light Surface 2 functional keys
+                    "#F2F2F0".toColorInt(), // Precision White canvas
+                    "#FFFFFF".toColorInt(), // Elevated white letter & space keys
+                    "#D4EAEB".toColorInt(), // Soft teal container for functional & punctuation keys
                     "#FFFFFF".toColorInt(), // Spacebar
                     "#080808".toColorInt(), // Absolute Black text
                     "#6B6B6B".toColorInt(), // Technical Gray light hints

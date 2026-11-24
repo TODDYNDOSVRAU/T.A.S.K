@@ -24,9 +24,11 @@ import android.view.View.OnLongClickListener
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.doOnNextLayout
 import androidx.core.view.isVisible
 import helium314.keyboard.event.HapticEvent
@@ -96,6 +98,13 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
             colors.setBackground(word, ColorType.STRIP_BACKGROUND)
             wordViews.add(word)
             val divider = inflater.inflate(R.layout.suggestion_divider, null)
+            if (divider is ImageView) {
+                val isDarkStrip = ColorUtils.calculateLuminance(colors.get(ColorType.STRIP_BACKGROUND)) < 0.5
+                val line = GradientDrawable()
+                line.setSize(1.dpToPx(resources), 18.dpToPx(resources))
+                line.setColor(if (isDarkStrip) 0x38F2F2F0.toInt() else 0x26080808.toInt())
+                divider.setImageDrawable(line)
+            }
             dividerViews.add(divider)
             val info = TextView(context, null, R.attr.suggestionWordStyle)
             info.setTextColor(colors.get(ColorType.KEY_TEXT))
@@ -133,8 +142,7 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         toolbarExpandKey.layoutParams.height = toolbarHeight
         toolbarExpandKey.layoutParams.width = toolbarHeight // we want it square
         colors.setBackground(toolbarExpandKey, ColorType.STRIP_BACKGROUND) // necessary because background is re-used for defaultToolbarBackground
-        colors.setColor(toolbarExpandKey, ColorType.TOOL_BAR_EXPAND_KEY)
-        colors.setColor(toolbarExpandKey.background, ColorType.TOOL_BAR_EXPAND_KEY_BACKGROUND)
+        toolbarExpandKey.setColorFilter(colors.get(ColorType.GESTURE_TRAIL))
 
         // background indicator for pinned keys
         val color = colors.get(ColorType.TOOL_BAR_KEY_ENABLED_BACKGROUND) or -0x1000000 // ignore alpha (in Java this is more readable 0xFF000000)
@@ -552,7 +560,11 @@ class SuggestionStripView(context: Context, attrs: AttributeSet?, defStyle: Int)
         view.setOnClickListener(this)
         view.setOnLongClickListener(this)
         (view.layoutParams as LinearLayout.LayoutParams).weight = 1f
-        colors.setColor(view, ColorType.TOOL_BAR_KEY)
+        if (view.tag == ToolbarKey.VOICE) {
+            view.setColorFilter(colors.get(ColorType.GESTURE_TRAIL))
+        } else {
+            colors.setColor(view, ColorType.TOOL_BAR_KEY)
+        }
         colors.setBackground(view, ColorType.STRIP_BACKGROUND)
     }
 

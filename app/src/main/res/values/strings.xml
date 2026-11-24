@@ -730,6 +730,7 @@ New dictionary:
     <!-- Theme name for light theme -->
     <string name="theme_name_tal_dark" tools:keep="@string/theme_name_tal_dark">T.A.L. Dark</string>
     <string name="theme_name_tal_light" tools:keep="@string/theme_name_tal_light">T.A.L. Light</string>
+    <string name="theme_name_task_emerald" tools:keep="@string/theme_name_task_emerald">T.A.S.K. Esmeralda</string>
     <string name="theme_name_light" tools:keep="@string/theme_name_light">Light</string>
     <!-- Theme name for holo white theme -->
     <string name="theme_name_holo_white" tools:keep="@string/theme_name_holo_white">Holo White</string>

@@ -332,7 +332,11 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
         if (key.isEnabled() || altersCode) {
             sTypingTimeRecorder.onCodeInput(code, eventTime);
             if (!isKeyRepeat) {
-                com.tal.task.TaskHitboxBridge.onTapCommitted(code);
+                if (code == KeyCode.DELETE) {
+                    com.tal.task.TaskHitboxBridge.onBackspaceCommitted();
+                } else {
+                    com.tal.task.TaskHitboxBridge.onTapCommitted(code);
+                }
             }
             if (code == KeyCode.MULTIPLE_CODE_POINTS) {
                 sListener.onTextInput(key.getOutputText());

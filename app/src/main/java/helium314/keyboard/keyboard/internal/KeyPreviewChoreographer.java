@@ -22,8 +22,8 @@ import java.util.ArrayDeque;
 import java.util.HashMap;
 
 /**
- * T.A.S.K. v3.2.0 Key Preview Choreographer:
- * - Deterministic iOS key-extension geometry (0 measure(WRAP_CONTENT) calls on ACTION_DOWN).
+ * T.A.S.K. v3.3.0 Key Preview Choreographer:
+ * - T.A.S.K. deterministic key-extension geometry (0 measure(WRAP_CONTENT) calls on ACTION_DOWN).
  * - Analytical critically-damped SpringAnimation (zeta = 1.0, omega = 46 rad/s) on Choreographer
  *   preserving live scale and velocity on mid-flight interruptions.
  * - Explicit IME accessibility exception honoring ANIMATOR_DURATION_SCALE == 0 (D16).

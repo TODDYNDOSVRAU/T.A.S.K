@@ -257,6 +257,7 @@ class Suggest(private val mDictionaryFacilitator: DictionaryFacilitator) {
             || wordComposer.hasDigits() // If the word has digits, we never auto-correct because it's likely the word was type with a lot of care // todo: but what if user touched the number row?
             || (wordComposer.isMostlyCaps && !wordComposer.isAllUpperCase) // If the word is mostly caps, we never auto-correct because this is almost certainly intentional
             || wordComposer.isResumed // We never auto-correct when suggestions are resumed because it would be unexpected
+            || com.tal.task.TaskHitboxBridge.shouldBlockAutoCorrection(consideredWord)
             // If we don't have a main dictionary, we never want to auto-correct. The reason
             // for this is, the user may have a contact whose name happens to match a valid
             // word in their language, and it will unexpectedly auto-correct. For example, if
